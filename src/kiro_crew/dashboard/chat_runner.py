@@ -194,6 +194,7 @@ from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
     _crew_log_lineage,
     _crew_log_model,
     _crew_log_seed_tree,
+    _crew_log_tree_depth,
     _crew_log_workspace,
     _slot_predecessor_store,
 )
