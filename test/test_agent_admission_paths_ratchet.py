@@ -129,6 +129,9 @@ SHADOW_SITES: frozenset[Site] = frozenset(
     {
         ("acp/client_start.py", "_spawn"),
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),
+        # The application-facing wrapper the per-turn app-agent check calls
+        # (``dashboard/chat_runner.py``), re-asking the spawn's question.
+        ("agent_sdk/__init__.py", "reserved_agent_name_refusal"),
     }
 )
 

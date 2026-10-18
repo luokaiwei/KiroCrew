@@ -66,6 +66,7 @@ class _ChatTurn:
     _irreversible_consumption_reported: "bool"
     _is_refusal_retry_turn: "bool"
     _is_synthetic: "bool"
+    _owner_backend: "str | None"
     _owner_host_allowed: "bool"
     _owner_project: "Any | None"
     _produced_visible_output: "bool"

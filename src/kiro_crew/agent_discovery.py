@@ -34,6 +34,7 @@ from kiro_crew.agent_files import (
 )
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
+    is_app_agent_launch_name,
     is_markdown_spec,
     is_native_skill_alias_name,
     iter_agent_spec_files,
@@ -277,7 +278,8 @@ def is_internal_agent_spec(info: object) -> bool:
       agent that merely ends in ``--readonly`` stays spawnable;
     * a skill-view alias (``kirocrew-skill-view-*``), which discovery already
       leaves out of the roster; matched here too so a row built some other way
-      cannot put one back.
+      cannot put one back. An app launch copy (``kirocrew-app-launch-*``,
+      ``apps.agent_launch``) is matched the same way.
 
     A roster that offers either sends the model straight into a spawn that
     fails: the read-only spec is written per side turn, after the shared
@@ -288,7 +290,8 @@ def is_internal_agent_spec(info: object) -> bool:
     if is_readonly_spec_description(getattr(info, "description", None)):
         return True
     return any(
-        isinstance(value, str) and is_native_skill_alias_name(value)
+        isinstance(value, str)
+        and (is_native_skill_alias_name(value) or is_app_agent_launch_name(value))
         for value in (getattr(info, "filename", None), getattr(info, "name", None))
     )
 
@@ -2346,6 +2349,11 @@ def list_agents(
         user_candidates = 0
         user_parsed = 0
         for f in iter_agent_spec_files(d):
+            # An app launch copy is the spec kiro-cli runs a palette-opened app
+            # agent under, never an agent to offer: the app's own agent is
+            # listed under its own name already (apps.agent_launch).
+            if is_app_agent_launch_name(f.name):
+                continue
             # AppleDouble sidecars are rejected by design, not by failure — a
             # directory holding only sidecars is empty of specs, not broken.
             if not f.name.startswith("._"):

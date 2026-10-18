@@ -159,6 +159,17 @@ def agents_dir_competing_claim(
     return _claim(agent, agents_dir, own_file)
 
 
+def reserved_agent_name_refusal(agent: str | None, work_dir: str | Path | None) -> str | None:
+    """Why a kiro-cli session in *work_dir* must not start: a checkout claims a reserved name.
+
+    The spawn's own check (managed names, skill-view aliases, app launch copies),
+    asked here by application code that must re-check it before each turn.
+    """
+    from kiro_crew.acp.managed_agent_shadow import managed_agent_shadow_refusal as _refusal
+
+    return _refusal(agent, work_dir)
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -174,6 +185,7 @@ __all__ = [
     "tool_row_text",
     "project_claims_agent_name",
     "agents_dir_competing_claim",
+    "reserved_agent_name_refusal",
     "ContextPromptProvider",
     "ContextStreamEvent",
     "CONTEXT_EVENT_AGENT_CHANGED",

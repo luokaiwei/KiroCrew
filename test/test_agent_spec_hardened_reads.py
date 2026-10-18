@@ -1063,6 +1063,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("list_agents", "unknown"),
         ("resolve_project_agent_name", "unknown"),
     ],
+    "kiro_crew/apps/agent_launch.py": [
+        ("app_agent_launch", "unknown"),
+        ("app_agent_launch", "unknown"),
+        ("app_agent_launch", "unknown"),
+    ],
     "kiro_crew/apps/builtins/auto_improvement/spine/crew_runner.py": [
         ("auto_improvement_assignment", "unknown")
     ],

@@ -181,9 +181,11 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
     _app_agent_host_allowed,
     _app_agent_start_dirs,
-    _app_agent_turn_host_allowed,
+    _app_agent_turn_backend,
+    _provider_backend,
     _recover_app_agent_binding,
     _retire_app_agent_session,
+    _runs_app_agent_launch,
     app_agent_binding_applies,
 )
 from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
@@ -2833,13 +2835,29 @@ async def _run_chat(
         owner_app, _, owner_agent = (slot.app_agent_owner or "").partition("/")
         turn.owner_app = owner_app
         turn.owner_agent = owner_agent
+        # On kiro-cli the turn launches the app's launch copy, by a name Crew
+        # writes, instead of the bare name kiro-cli would resolve project-first
+        # (apps.agent_launch). Empty on every other turn.
+        _app_launch_agent = ""
         if app_agent_binding_applies(slot):
             _owner_project = selected_binding[1] or None
             turn._owner_project = _owner_project
-            _owner_host_allowed = await _app_agent_turn_host_allowed(state, session_key, loaded_cfg)
+            _owner_backend = await _app_agent_turn_backend(state, session_key, loaded_cfg)
+            turn._owner_backend = _owner_backend
+            _owner_host_allowed = (
+                _owner_backend is not None and routing_for(_owner_backend) is Routing.AGENT_SPEC
+            )
             turn._owner_host_allowed = _owner_host_allowed
 
-            refusal = await asyncio.to_thread(_check_owner, turn)
+            refusal, _app_launch_agent = await asyncio.to_thread(_check_owner, turn)
+            if not refusal and _app_launch_agent:
+                # A session already registered under the key was started as
+                # something other than the copy (the bare name, before this turn
+                # chose the copy); it must not serve this turn, so the claim
+                # below cold-starts under the copy.
+                live = state.sessions.get_provider(session_key)
+                if live is not None and not _runs_app_agent_launch(live, _app_launch_agent):
+                    await _retire_app_agent_session(state, slot, session_key)
             if refusal:
                 logger.warning(
                     "refusing an app-owned agent turn for slot %s: %s",
@@ -3112,6 +3130,10 @@ async def _run_chat(
             start_priority=_turn_priority,
             **_app_allocation_kwargs(slot),
         )
+        if _app_launch_agent:
+            # An app-owned kiro-cli turn asks kiro-cli for the app's launch copy;
+            # the session keeps the agent's own name as its identity.
+            _allocation_kwargs["app_launch_agent"] = _app_launch_agent
 
         # The switch lock is held for the COLD START only: the window it
         # closes is "no session registered yet, so the switch handlers' busy
@@ -3282,12 +3304,31 @@ async def _run_chat(
         # app-authored prompt without the app's spec, so it is refused here
         # before anything is sent, and the session is reset so the next turn
         # allocates afresh from the current selection.
-        if app_agent_binding_applies(slot) and not _app_agent_host_allowed(client):
+        # On kiro-cli the claimed provider must also have been started as the
+        # app's launch copy and nothing else: the pre-claim read may have chosen
+        # another backend, so this turn passed the bare name, which kiro-cli would
+        # resolve project-first.
+        _claimed_off_spec = app_agent_binding_applies(slot) and (
+            not _app_agent_host_allowed(client)
+            or (
+                _provider_backend(client) == ACP_BACKEND_KIRO
+                and not _runs_app_agent_launch(client, _app_launch_agent)
+            )
+        )
+        if _claimed_off_spec:
             from kiro_crew.apps import manager as app_manager
 
-            refusal = await asyncio.to_thread(app_manager.app_agent_backend_refusal, owner_app)
+            if _app_agent_host_allowed(client):
+                refusal = await asyncio.to_thread(
+                    app_manager.app_agent_launch_refusal,
+                    owner_app,
+                    "this chat's session did not start from the app's own agent spec. "
+                    "Run the command again from the command palette.",
+                )
+            else:
+                refusal = await asyncio.to_thread(app_manager.app_agent_backend_refusal, owner_app)
             logger.warning(
-                "refusing an app-owned agent turn for slot %s: backend not allowed",
+                "refusing an app-owned agent turn for slot %s: claimed session off the app spec",
                 redact_log_via_context(slot.key),
             )
             try:

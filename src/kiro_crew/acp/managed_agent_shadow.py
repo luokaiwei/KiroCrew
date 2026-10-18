@@ -31,7 +31,10 @@ The skill-view aliases are reserved the same way. With native skill projection
 on, the name a spawn finally hands to ``--agent`` is an alias Kiro Crew generates
 and publishes under ``~/.kiro/agents``, not the agent's own name, and kiro-cli
 resolves that alias against the checkout first as well. An alias is always Crew's
-own file, so a checkout may not claim one either.
+own file, so a checkout may not claim one either. So are the app launch copies
+(``kirocrew-app-launch-*``): a palette-opened app agent runs on kiro-cli under
+its launch copy's name (:mod:`kiro_crew.apps.agent_launch`), and a checkout that
+could claim that name would win it the way it could win the bare agent name.
 
 App commands distinguish confirmed claims from unverifiable scans of a selected
 name. Their user-level uniqueness check uses the same screened recursive walk and
@@ -49,6 +52,7 @@ from kiro_crew import agent_discovery, hooks
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
+    is_app_agent_launch_name,
     is_native_skill_alias_name,
     spec_stem,
 )
@@ -239,7 +243,11 @@ def _matching_claim(spec: Path, matches: Callable[[str], bool]) -> str | None:
 
 def _is_reserved(name: str) -> bool:
     folded = name.casefold()
-    return folded in _RESERVED_FOLDED or is_native_skill_alias_name(folded)
+    return (
+        folded in _RESERVED_FOLDED
+        or is_native_skill_alias_name(folded)
+        or is_app_agent_launch_name(folded)
+    )
 
 
 def _link_refusal(path: Path) -> str:
