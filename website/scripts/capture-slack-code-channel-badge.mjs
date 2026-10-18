@@ -89,7 +89,7 @@ async function assertRows(page) {
   check('bound row chip has noopener', (await bound.getAttribute('rel')) === 'noopener noreferrer')
   check('bound row chip names the channel', (await bound.textContent()).includes('#fix-login-redirect'))
   const archived = rowOf(page, 'Bump the Node runtime').getByTestId('code-channel-status')
-  check('archived row says Archived', (await archived.textContent()).includes('Archived'))
+  check('archived row says Channel archived', (await archived.textContent()).includes('Channel archived'))
   const archivedChip = rowOf(page, 'Bump the Node runtime').getByTestId('code-channel-badge-row')
   check('archived chip keeps the name in its tooltip', (await archivedChip.getAttribute('title')).includes('#bump-node-runtime'))
   const wrapped = rowOf(page, 'Draft the release notes').getByTestId('code-channel-badge-row')
@@ -100,7 +100,7 @@ async function assertRows(page) {
   const slackMark = '[role="img"][aria-label="Connected to Slack"]'
   check('code-channel row shows no second Slack mark', (await rowOf(page, 'Fix the login redirect loop').locator(slackMark).count()) === 0)
   check('ordinary Slack-linked row keeps its mark', (await rowOf(page, 'Plan the Q4 roadmap').locator(slackMark).count()) === 1)
-  check('wrapped-up row says Wrapped up', (await wrapped.textContent()).includes('Wrapped up'))
+  check('wrapped-up row says Task done', (await wrapped.textContent()).includes('Task done'))
   check('plain row has no chip', (await rowOf(page, 'Plan the Q4 roadmap').getByTestId('code-channel-badge-row').count()) === 0)
   // The chip sits on the meta line and must never paint over the timestamp.
   for (const title of ['Fix the login redirect loop', 'Bump the Node runtime', 'Draft the release notes']) {
@@ -149,8 +149,8 @@ async function main() {
       await shootHeader(page, join(OUT, `02-header-${theme}.png`))
       // The archived and wrapped-up states in the header.
       for (const [title, state, file] of [
-        ['Bump the Node runtime', 'Archived', 'archived'],
-        ['Draft the release notes', 'Wrapped up', 'wrapped-up'],
+        ['Bump the Node runtime', 'Channel archived', 'archived'],
+        ['Draft the release notes', 'Task done', 'wrapped-up'],
       ]) {
         await page.locator('.session-row [data-session-title]').filter({ hasText: title }).click()
         await page.waitForTimeout(800)

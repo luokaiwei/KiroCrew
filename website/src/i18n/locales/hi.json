@@ -10162,8 +10162,8 @@
     "codeChannelBadge": {
       "label": "Slack कोड चैनल",
       "label_short": "कोड चैनल",
-      "archived": "संग्रहीत",
-      "wrapped_up": "काम पूरा",
+      "archived": "चैनल संग्रहीत",
+      "wrapped_up": "टास्क पूरा",
       "open_named": "{{channel}} को Slack में खोलो",
       "open_unnamed": "इस कोड चैनल को Slack में खोलो",
       "opens_in_slack": "(Slack में खुलता है)",

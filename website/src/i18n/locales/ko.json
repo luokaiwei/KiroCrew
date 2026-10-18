@@ -10019,8 +10019,8 @@
     "codeChannelBadge": {
       "label": "Slack 코드 채널",
       "label_short": "코드 채널",
-      "archived": "보관됨",
-      "wrapped_up": "완료됨",
+      "archived": "채널 보관됨",
+      "wrapped_up": "작업 완료",
       "open_named": "Slack에서 {{channel}} 열기",
       "open_unnamed": "Slack에서 이 코드 채널 열기",
       "opens_in_slack": "(Slack에서 열림)",

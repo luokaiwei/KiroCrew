@@ -10305,8 +10305,8 @@
     "codeChannelBadge": {
       "label": "Canale di codice Slack",
       "label_short": "Canale di codice",
-      "archived": "Archiviato",
-      "wrapped_up": "Concluso",
+      "archived": "Canale archiviato",
+      "wrapped_up": "Attività conclusa",
       "open_named": "Apri {{channel}} in Slack",
       "open_unnamed": "Apri questo canale di codice in Slack",
       "opens_in_slack": "(si apre in Slack)",

@@ -10448,8 +10448,8 @@
     "codeChannelBadge": {
       "label": "Канал кода Slack",
       "label_short": "Канал кода",
-      "archived": "В архиве",
-      "wrapped_up": "Завершён",
+      "archived": "Канал в архиве",
+      "wrapped_up": "Задача выполнена",
       "open_named": "Открой {{channel}} в Slack",
       "open_unnamed": "Открой этот канал кода в Slack",
       "opens_in_slack": "(откроется в Slack)",

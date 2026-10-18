@@ -2,7 +2,7 @@
 // Slack code channel: a link to the channel in the sidebar row and the header,
 // nothing at all for any other session.
 import { screen, fireEvent, render } from '@testing-library/react'
-import { CodeChannelBadge } from './CodeChannelBadge'
+import { CodeChannelBadge, CodeChannelMark } from './CodeChannelBadge'
 import { i18nT } from '../i18n/t'
 import type { CodeChannelInfo } from '../types'
 
@@ -64,6 +64,20 @@ describe('CodeChannelBadge', () => {
     const a = screen.getByRole('link')
     expect(a.textContent).toContain(k('label_short'))
     expect(a.getAttribute('title')).toContain(k('open_unnamed'))
+  })
+
+  it('an unnamed finished channel still says it is a code channel beside its state', () => {
+    render(<CodeChannelBadge info={info({ channel_name: '', status: 'wrapped_up' })} variant="row" />)
+    const text = screen.getByRole('link').textContent ?? ''
+    expect(text).toContain(k('label_short'))
+    expect(text).toContain(k('wrapped_up'))
+  })
+
+  it('the phone marker is not the plain Slack mark', () => {
+    render(<CodeChannelMark />)
+    const mark = screen.getByTestId('mobile-code-channel-glyph')
+    expect(mark).toHaveAttribute('aria-label', k('label'))
+    expect(mark.querySelector('svg.lucide-code')).not.toBeNull()
   })
 
   it('no link from the backend renders a plain mark, never a dead link', () => {

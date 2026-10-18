@@ -10162,8 +10162,8 @@
     "codeChannelBadge": {
       "label": "Slack কোড চ্যানেল",
       "label_short": "কোড চ্যানেল",
-      "archived": "আর্কাইভ করা",
-      "wrapped_up": "কাজ শেষ",
+      "archived": "চ্যানেল আর্কাইভ করা",
+      "wrapped_up": "টাস্ক শেষ",
       "open_named": "{{channel}} Slack-এ খোলো",
       "open_unnamed": "এই কোড চ্যানেল Slack-এ খোলো",
       "opens_in_slack": "(Slack-এ খোলে)",

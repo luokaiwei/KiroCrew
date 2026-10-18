@@ -10019,8 +10019,8 @@
     "codeChannelBadge": {
       "label": "Slack 代码频道",
       "label_short": "代码频道",
-      "archived": "已归档",
-      "wrapped_up": "已收尾",
+      "archived": "频道已归档",
+      "wrapped_up": "任务已完成",
       "open_named": "在 Slack 中打开 {{channel}}",
       "open_unnamed": "在 Slack 中打开此代码频道",
       "opens_in_slack": "（在 Slack 中打开）",

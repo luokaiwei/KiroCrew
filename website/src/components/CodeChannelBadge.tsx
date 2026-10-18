@@ -1,4 +1,4 @@
-import { Archive, CircleCheck, ExternalLink } from 'lucide-react'
+import { Archive, CircleCheck, Code, ExternalLink } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import type { CodeChannelInfo } from '../types'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
@@ -60,16 +60,29 @@ function codeChannelTitle(info: CodeChannelInfo): string {
 const CHIP_BASE =
   'inline-flex min-w-0 items-center gap-1 rounded-[4px] border no-underline transition-colors motion-reduce:transition-none'
 
+/** The phone top bar's marker: the Slack mark with a code glyph, so it cannot
+ *  be taken for the plain Slack mark an ordinary Slack-linked session wears.
+ *  A marker, not a link: the bar's title is already the session menu's
+ *  trigger, and the sidebar row carries the link. */
+export function CodeChannelMark({ size = 12 }: { size?: number }) {
+  const label = i18nT('components.codeChannelBadge.label')
+  return (
+    <span className="inline-flex shrink-0 items-center gap-px" role="img" aria-label={label} title={label} data-testid="mobile-code-channel-glyph">
+      <ChannelBrandIcon channel="slack" size={size} />
+      <Code size={size - 2} className="shrink-0 text-muted" aria-hidden="true" />
+    </span>
+  )
+}
+
 export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; variant: 'row' | 'header' }) {
   const name = codeChannelName(info)
   const state = statusLabel(info.status)
-  const inactive = info.status !== 'active'
   const header = variant === 'header'
   const size = header ? 11 : 10
   const sizing = header
     ? 'max-w-full px-2 py-0.5 text-[11px] rounded-md pointer-events-auto'
     : 'max-w-[55%] shrink overflow-hidden px-1 py-0 text-[10px] leading-[14px] font-normal'
-  const tone = inactive
+  const tone = info.status === 'archived'
     ? 'border-border bg-bg-elevated/60 text-muted'
     : 'border-border bg-accent-subtle text-text'
   const StateIcon = info.status === 'archived' ? Archive : info.status === 'wrapped_up' ? CircleCheck : null
@@ -88,11 +101,16 @@ export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; var
           in the accessible name and the tooltip). */}
       {name ? (
         <span className={`truncate min-w-0 ${header ? 'max-w-[32ch] text-muted' : state ? 'sr-only' : ''}`} dir="auto">{name}</span>
-      ) : !header && !state ? (
-        <span className="truncate min-w-0" aria-hidden="true">{i18nT('components.codeChannelBadge.label_short')}</span>
+      ) : !header ? (
+        // No name: keep saying what the chip is, beside any state word. On a
+        // meta line too narrow for both (a phone), the state word wins: the
+        // row's `@container/rowmeta` decides, and the tooltip still says it.
+        <span className={`${state ? 'hidden shrink-0 whitespace-nowrap @[13rem]/rowmeta:inline' : 'min-w-0 truncate'}`} aria-hidden="true">{i18nT('components.codeChannelBadge.label_short')}</span>
       ) : null}
       {StateIcon && (
-        <span className="inline-flex min-w-0 items-center gap-0.5 text-muted" data-testid="code-channel-status">
+        // Two tones as well as two glyphs: an archived channel is greyed, a
+        // finished task reads as done.
+        <span className={`inline-flex min-w-0 items-center gap-0.5 ${info.status === 'wrapped_up' ? 'text-ok' : 'text-muted'}`} data-testid="code-channel-status">
           <StateIcon size={size - 1} className="shrink-0" aria-hidden="true" />
           <span className="truncate min-w-0 whitespace-nowrap">{state}</span>
         </span>

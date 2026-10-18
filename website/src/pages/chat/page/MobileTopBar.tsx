@@ -5,7 +5,7 @@ import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } fro
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
-import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
+import { CodeChannelMark } from '../../../components/CodeChannelBadge'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
@@ -162,11 +162,7 @@ export default function MobileTopBar({
                     {/* A code channel's session is marked here too, as a glyph
                         rather than a link: the bar holds two controls and this
                         label is one of them. The sidebar row carries the link. */}
-                    {currentSlot?.code_channel && (
-                      <span className="inline-flex shrink-0 mr-1" role="img" aria-label={i18nT('components.codeChannelBadge.label')} title={i18nT('components.codeChannelBadge.label')} data-testid="mobile-code-channel-glyph">
-                        <ChannelBrandIcon channel="slack" size={12} />
-                      </span>
-                    )}
+                    {currentSlot?.code_channel && <span className="mr-1 inline-flex"><CodeChannelMark size={12} /></span>}
                     {title}
                   </>
                 }
