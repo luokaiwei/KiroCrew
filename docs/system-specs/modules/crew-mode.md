@@ -1489,7 +1489,15 @@ itself a choice to use it -- and a team whose crewmates are all hidden keeps its
 (empty) roster header. Where nothing auto-opens (below md) and every row is
 hidden, the roster says so and names the search. A row from an older gateway
 that carries no `has_dm_message` is listed. The header count and the filter
-tallies count the listed rows plus any hidden row the search reaches.
+tallies count the listed rows plus any hidden row the search reaches. So that
+count is not read as the whole crew (#21852), the list ends with one muted line
+naming the crewmates the rule hides by the label their row shows, the ones the
+user made first (origin Mine, or created on the dashboard) and then in roster
+order: all of them when there are up to three (`hidden_named_hint`), else the
+first three and a count of the rest (`hidden_more_hint`), and saying that the
+search finds them (`member-hidden-hint`). The line is drawn only
+while no search is typed, no filter narrows the list, and at least one row is
+listed (the every-row-hidden case already has its own line).
 Before any of the landing rules, a bare visit with the Crewmates preview on
 opens Mate while no message has been exchanged with it (`resolveMateLanding`:
 Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of a

@@ -18356,6 +18356,8 @@
       "star": "{{name}} にスターを付ける",
       "unstar": "{{name}} のスターを外す",
       "all_hidden_hint": "まだ使っていないクルーメイトは非表示です。検索すると見つかります。",
+      "hidden_named_hint_other": "{{names}} はまだ使っていないため非表示です。検索すると見つかります。",
+      "hidden_more_hint_other": "{{names}} ほか {{count}} 名、まだ使っていないクルーメイトが非表示になっています。検索すると見つかります。",
       "star_failed_title": "スターを保存できませんでした",
       "star_failed": "このクルーメイトのスターを更新できませんでした。",
       "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",
