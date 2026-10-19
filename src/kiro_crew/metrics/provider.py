@@ -784,6 +784,21 @@ def _build_recorder() -> _Build:
             register_inventory_gauges(meter)
         except Exception:
             logger.warning("inventory gauges unavailable", exc_info=True)
+        # The crew log's loss counter, on the same consent gate and the same
+        # observable-callback contract. Its OWN try for the reason the two above
+        # have one: it reads a different subsystem, and a crew log that will not
+        # import must not take the process or inventory gauges down with it.
+        #
+        # An observable counter rather than a call site, because every loss it
+        # reports is detected on the crew log's append thread or on a producer's
+        # own thread -- paths a turn waits on -- and is already counted there. The
+        # callback runs on the reader's ticker thread and reads those counters.
+        try:
+            from kiro_crew.metrics.crew_log_health import register_crew_log_health
+
+            register_crew_log_health(meter)
+        except Exception:
+            logger.warning("crew log health counter unavailable", exc_info=True)
         return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
