@@ -47,7 +47,8 @@ describe('CodeChannelBadge', () => {
   it('archived and wrapped up draw different glyphs, so they differ without the word', () => {
     const glyph = (status: CodeChannelInfo['status']) => {
       const { unmount } = render(<CodeChannelBadge info={info({ status })} variant="row" />)
-      const svg = screen.getByTestId('code-channel-status').querySelector('svg')?.getAttribute('class') ?? ''
+      // On the row the glyph sits beside the Slack mark, apart from the word.
+      const svg = screen.getByTestId('code-channel-status-glyph').getAttribute('class') ?? ''
       unmount()
       return svg
     }

@@ -126,15 +126,39 @@ describe('code channel row: shrink order on a short meta line', () => {
     expect(agent).toHaveClass('truncate', 'min-w-0')
     expect(shrinkWeight(agent)).toBeGreaterThan(shrinkWeight(chip!) * 100)
     expect(shrinkWeight(chip!)).toBeGreaterThan(0)
+    // No cap on the chip's share of the line: a cap would cut the channel name
+    // while the agent name still had width to give.
+    expect(chip!.getAttribute('class')).not.toMatch(/(^|\s)max-w-/)
   })
 
   it('the channel name truncates inside the chip but keeps "#" and a few characters', () => {
     renderSidebar([CODE])
-    const name = within(metaLine('code title').chip as HTMLElement).getByTestId('code-channel-name')
+    const chip = metaLine('code title').chip as HTMLElement
+    const name = within(chip).getByTestId('code-channel-name')
     expect(name.textContent).toBe('#bump-node-runtime-and-lockfile')
-    expect(name).toHaveClass('truncate', 'min-w-[4.5ch]')
+    expect(name).toHaveClass('truncate', 'min-w-0')
+    // The slot holding it has a readable floor; below it the slot leaves whole
+    // (the chip wraps it onto a clipped line) rather than showing a bare "#…".
+    const slot = within(chip).getByTestId('code-channel-text')
+    expect(slot).toHaveClass('basis-0', 'grow', 'min-w-[5ch]', 'overflow-hidden')
+    expect(chip).toHaveClass('flex-wrap', 'overflow-hidden', 'h-4')
     // The chip itself has a floor too, so it cannot shrink below its Slack mark.
-    expect(metaLine('code title').chip?.getAttribute('class')).toMatch(/(^|\s)min-w-\[\d+px\](\s|$)/)
+    expect(chip.getAttribute('class')).toMatch(/(^|\s)min-w-\[\d+px\](\s|$)/)
+  })
+
+  it('the link glyph leaves before the channel name loses a character', () => {
+    renderSidebar([CODE])
+    const slot = within(metaLine('code title').chip as HTMLElement).getByTestId('code-channel-text')
+    const name = within(slot).getByTestId('code-channel-name')
+    const glyph = within(slot).getByTestId('code-channel-link-glyph')
+    // Same wrapping line, glyph after the name, and the name at its FULL width
+    // (no zero basis): a name and glyph that do not fit wrap the glyph away
+    // first, and only then does the name, alone on its line, truncate.
+    expect(slot).toHaveClass('flex-wrap', 'h-[14px]')
+    expect(glyph.parentElement).toBe(slot)
+    expect(name.compareDocumentPosition(glyph) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(name).not.toHaveClass('basis-0')
+    expect(shrinkWeight(glyph)).toBe(0)
   })
 
   it('the Slack mark has a fixed size and never shrinks', () => {

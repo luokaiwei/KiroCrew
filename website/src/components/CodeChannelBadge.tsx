@@ -62,27 +62,40 @@ const CHIP_BASE =
 
 /**
  * How the row chip gives up width on a short meta line (agent name, this chip,
- * the time). The time never shrinks and the agent name yields first (see
- * `SessionRow`); then this chip shrinks, down to a floor of exactly its border,
- * padding and Slack mark, so the mark is never cut.
+ * the time), in this order:
  *
- * Inside the chip the text (the channel name, or the state word) has no width
- * of its own (`basis-0 grow`) and a floor of "#" plus a few characters. The chip
- * wraps onto a second line that its fixed height clips away, so text that cannot
- * keep that floor leaves whole, with the link glyph after it, instead of
- * shrinking to a sliver; the name stays in the tooltip and the accessible name.
+ *   1. the agent name yields first (`CODE_CHANNEL_AGENT_FIT`, in `SessionRow`);
+ *   2. then the external-link glyph leaves, before the word loses a character;
+ *   3. then the word (the channel name, or the state) truncates, down to a
+ *      readable floor of "#" plus a few characters;
+ *   4. below that floor the chip goes icon-only: the Slack mark alone, the name
+ *      in the tooltip and the accessible name. Never a bare "#…".
  *
- * Under 10rem of meta line (a phone) the padding and gaps tighten, the link
- * glyph drops (the chip is still the link, and says so to a screen reader) and
- * a state word leaves for its glyph, so "#" plus a few characters fit beside a
- * long "Yesterday 05:55 AM". Under 8.5rem (the sidebar at its narrowest) the
- * padding drops to 1px so a mark-only chip and that time still fit together.
- * Those container-query classes sit inline on the elements (`ROW_CHIP_NARROW`
- * etc. would be ALL-CAPS constants the strict i18n gate reads as copy).
+ * The Slack mark and the time never shrink.
+ *
+ * Two nested wrapping lines, each clipped to one line by a fixed height, do it
+ * in CSS alone. The chip holds the mark and a text slot (`ROW_TEXT_FIT`) that
+ * has no width of its own (`basis-0 grow`) but a floor; a chip too narrow for
+ * mark plus floor wraps the slot onto its hidden second line (step 4). Inside
+ * the slot the word sits at its full width, so a word and glyph that do not fit
+ * side by side wrap the glyph away first (step 2), and the word, alone on its
+ * line, then truncates (step 3).
+ *
+ * Under 10rem of meta line (a phone) the padding and gaps tighten; under 8.5rem
+ * (the sidebar at its narrowest) the padding drops to 1px. Those
+ * container-query classes sit inline on the chip (the strict i18n gate reads an
+ * ALL-CAPS constant holding `@` as copy).
+ *
+ * An icon-only chip can be wider than its mark (the meta line hands it
+ * whatever is left), so its one line is centred: a pill with the mark in the
+ * middle, never a mark with an empty tail. There is no cap on the chip's share
+ * of the line, because a cap would cut the channel name while the agent name
+ * still had width to give.
  */
 const ROW_CHIP_FIT =
-  'h-4 max-w-[55%] min-w-[20px] shrink flex-wrap content-start overflow-hidden px-1'
-const ROW_TEXT_FIT = 'basis-0 grow min-w-[4.5ch] truncate'
+  'h-4 min-w-[20px] shrink flex-wrap content-start justify-center overflow-hidden px-1'
+const ROW_TEXT_FIT =
+  'basis-0 grow min-w-[5ch] h-[14px] inline-flex flex-wrap content-start items-center gap-1 overflow-hidden'
 /** The agent name beside a row chip: yields first (by a shrink weight no other
  *  item comes near). `SessionRow` also hides it on a meta line under 10rem,
  *  where it could only show "k…" and its gap is the room "#" plus a few
@@ -117,6 +130,50 @@ export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; var
     : 'border-border bg-accent-subtle text-text'
   const StateIcon = info.status === 'archived' ? Archive : info.status === 'wrapped_up' ? CircleCheck : null
   const stateTone = info.status === 'wrapped_up' ? 'text-ok' : 'text-muted'
+  const linkGlyph = info.web_url
+    ? <ExternalLink size={header ? 10 : 9} className="shrink-0 text-muted" aria-hidden="true" data-testid="code-channel-link-glyph" />
+    : null
+  // The header has room: name, then any state, then the link glyph.
+  const headerText = (
+    <>
+      {name && <span className="truncate min-w-0 max-w-[32ch] text-muted" dir="auto" data-testid="code-channel-name">{name}</span>}
+      {StateIcon && (
+        <span className={`inline-flex min-w-0 items-center gap-0.5 ${stateTone}`} data-testid="code-channel-status">
+          <StateIcon size={size - 1} className="shrink-0" aria-hidden="true" />
+          <span className="truncate min-w-0 whitespace-nowrap">{state}</span>
+        </span>
+      )}
+      {linkGlyph}
+    </>
+  )
+  // The row's meta line has room for one word: an active channel's name, or an
+  // archived or wrapped-up one's state (the name stays in the accessible name
+  // and the tooltip). See ROW_TEXT_FIT for how it gives up width.
+  const rowWord = state || name || i18nT('components.codeChannelBadge.label_short')
+  const rowText = (
+    <>
+      {name && state && <span className="sr-only" dir="auto" data-testid="code-channel-name">{name}</span>}
+      {StateIcon && (
+        // Two tones as well as two glyphs: an archived channel is greyed, a
+        // finished task reads as done. The glyph stays beside the mark.
+        <StateIcon size={size - 1} className={`shrink-0 ${stateTone}`} aria-hidden="true" data-testid="code-channel-status-glyph" />
+      )}
+      <span className={ROW_TEXT_FIT} data-testid="code-channel-text">
+        {!name && state && (
+          // No name: keep saying what the chip is, beside its state word, where
+          // the meta line has room for both (`@container/rowmeta`).
+          <span className="hidden shrink-0 whitespace-nowrap @[13rem]/rowmeta:inline" aria-hidden="true">{i18nT('components.codeChannelBadge.label_short')}</span>
+        )}
+        <span
+          className={`min-w-0 truncate ${state ? stateTone : ''}`}
+          dir="auto"
+          aria-hidden={!state && !name ? true : undefined}
+          data-testid={state ? 'code-channel-status' : name ? 'code-channel-name' : undefined}
+        >{rowWord}</span>
+        {linkGlyph}
+      </span>
+    </>
+  )
   const body = (
     <>
       {/* The Slack mark: a fixed box that never shrinks, first in the chip so
@@ -129,32 +186,7 @@ export function CodeChannelBadge({ info, variant }: { info: CodeChannelInfo; var
       ) : (
         <span className="sr-only">{i18nT('components.codeChannelBadge.label')}</span>
       )}
-      {/* The row's meta line has room for one word: an active channel shows its
-          name, an archived or wrapped-up one its state instead (the name stays
-          in the accessible name and the tooltip). */}
-      {name ? (
-        <span
-          className={header ? 'truncate min-w-0 max-w-[32ch] text-muted' : state ? 'sr-only' : ROW_TEXT_FIT}
-          dir="auto"
-          data-testid="code-channel-name"
-        >{name}</span>
-      ) : !header ? (
-        // No name: keep saying what the chip is, beside any state word. On a
-        // meta line too narrow for both (a phone), the state word wins: the
-        // row's `@container/rowmeta` decides, and the tooltip still says it.
-        <span className={`${state ? 'hidden shrink-0 whitespace-nowrap @[13rem]/rowmeta:inline' : ROW_TEXT_FIT}`} aria-hidden="true">{i18nT('components.codeChannelBadge.label_short')}</span>
-      ) : null}
-      {StateIcon && (
-        // Two tones as well as two glyphs: an archived channel is greyed, a
-        // finished task reads as done. On the row the group's box dissolves
-        // (`contents`), so its glyph stays with the mark and only its word
-        // takes the text slot's floor and wrap.
-        <span className={header ? `inline-flex min-w-0 items-center gap-0.5 ${stateTone}` : `contents ${stateTone}`} data-testid="code-channel-status">
-          <StateIcon size={size - 1} className="shrink-0" aria-hidden="true" />
-          <span className={header ? 'truncate min-w-0 whitespace-nowrap' : `${ROW_TEXT_FIT} @max-[10rem]/rowmeta:sr-only`}>{state}</span>
-        </span>
-      )}
-      {info.web_url && <ExternalLink size={header ? 10 : 9} className={`shrink-0 text-muted ${header ? '' : '@max-[10rem]/rowmeta:hidden'}`} aria-hidden="true" />}
+      {header ? headerText : rowText}
     </>
   )
   if (!info.web_url) {
