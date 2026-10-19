@@ -2177,6 +2177,29 @@ Mutating routes fall into two categories:
 
 All mutating routes require an unrestricted (non-restricted) session.
 
+#### Deploy handler owners
+
+`deploy/handlers.py` is the import path and the patch seam of these routes: the dashboard
+server mounts them through its `register_routes`, and tests patch names on it. It keeps the
+aiohttp layer: every route handler, the internal-secret and cloud-deployment gates around them,
+the JSON body parsing, the teardown route's reaper check and manifest expiry
+(`_check_reaper_installed`, `_expire_manifest_best_effort`) and `register_routes`. The code
+those handlers call lives in three owner modules beside it, one responsibility each, and new
+code for a responsibility goes to its module:
+
+| Owner | Responsibility |
+|---|---|
+| `deploy/handlers_guards.py` | What every route shares on the way out: the restricted-session refusal, the credential and exfiltration-URL redaction of response text, `_safe_err`, the SEL `_audit` record and the reaper remediation commands |
+| `deploy/handlers_content.py` | What a deploy may publish: the `local_dir` and `artifact_slug` input specs, the allowed-roots confinement, the private staging snapshot, the content digest and size, the pre-publish scan, an artifact's standalone-HTML render and `resolve_webapp_public_dir` |
+| `deploy/handlers_sites.py` | The AWS identity and the site operations: the profile and region specs, `_resolve_profile`, the legacy single-profile config view, and `_do_deploy`, `_do_recall`, `_do_destroy` and `_do_list` |
+
+The facade is a `kiro_crew._facade_mirror` mirror: a patch of `deploy.handlers.<name>`
+reaches every owner that binds the name, so tests patch the facade, never an owner. The
+owners import each other lowest layer first, in the order of the table, never the facade.
+`handlers_sites.py` logs on the `kiro_crew.deploy.handlers` logger, and the two moved
+exception classes keep `kiro_crew.deploy.handlers` as their `__module__`.
+`test/test_handlers_deploy_facade.py` pins this shape.
+
 ### Teardown Semantics
 
 Teardown of a `webapp` artifact follows a **tombstone + manifest-expiry + reaper**

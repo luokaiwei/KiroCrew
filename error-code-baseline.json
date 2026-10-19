@@ -367,8 +367,11 @@
     },
     "deploy/handlers.py": {
       "dynamic_status": 5,
-      "missing_code": 39,
+      "missing_code": 36,
       "opaque_body": 2
+    },
+    "deploy/handlers_guards.py": {
+      "missing_code": 3
     }
   }
 }

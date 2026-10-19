@@ -2735,8 +2735,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/agent_admin/agent_detail.py",
         "dashboard/agent_admin/capabilities.py",
         "dashboard/agent_admin/roster.py",
-        # Pre-publish content scanning (a scan, not an egress of agent output).
+        # The deploy routes and owners: a pre-publish scan, not an egress of agent output.
         "deploy/handlers.py",
+        "deploy/handlers_guards.py",
+        "deploy/handlers_sites.py",
         # Redacts CLI stderr as an AWSError message is BUILT, before any caller
         # exists to render it. It has to happen here rather than at the boundary:
         # this is also where that text is trimmed to a length cap, and trimming
