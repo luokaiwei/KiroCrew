@@ -107,3 +107,14 @@ PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
 #   kirocrew.crew_log.append.bytes, kirocrew.crew_log.append.batch,
 #   kirocrew.crew_log.eager.queue_depth, kirocrew.crew_log.writer.buffered,
 #   kirocrew.crew_log.bus.subscriber_error, kirocrew.crew_log.fold.lag
+
+#: Instrumentation scope the metrics above are recorded on, beside the existing
+#: ``kiro_crew`` scope that carries every other instrument. Scope is the ONLY
+#: thing that differs: one meter provider, the same readers, views and resource,
+#: so the split changes the scope name an instrument is filed under and nothing
+#: else. The allowlist is what gates egress; this makes the two populations
+#: separable on a receiving side without carrying a name list.
+#:
+#: Spelled with a dot to match the scope naming other Kiro clients use, which is
+#: why it is not simply ``kiro_crew_product``.
+PRODUCT_SCOPE = "kiro.crew"

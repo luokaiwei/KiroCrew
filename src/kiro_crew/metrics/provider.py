@@ -46,6 +46,7 @@ from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
+from kiro_crew.metrics.product_metrics import PRODUCT_SCOPE
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -763,6 +764,16 @@ def _build_recorder() -> _Build:
                 ", ".join(otlp_names),
             )
         meter = provider.get_meter(_SCOPE)
+        # A SECOND meter for the product metrics, beside the one above. Scope is
+        # the only thing that differs: same provider, same readers, same views,
+        # same resource, so every destination AND the local sink see exactly what
+        # they saw before apart from the scope name an instrument is filed under.
+        # Nothing in this repo reads the scope -- the dashboard flattens
+        # scope_metrics and keys by metric name -- so the split costs nothing
+        # here and lets a receiving side separate the two populations without
+        # carrying a name list. The ALLOWLIST is still what gates egress; this is
+        # routing, and it narrows nothing.
+        product_meter = provider.get_meter(PRODUCT_SCOPE)
         # Process-resource gauges (threads/fds/gc/rss/cpu) ride the same consent
         # gate: registered only on this live path, and their observable
         # callbacks run solely when a reader collects. Best-effort — a failure
@@ -782,10 +793,17 @@ def _build_recorder() -> _Build:
         try:
             from kiro_crew.metrics.inventory_gauges import register_inventory_gauges
 
-            register_inventory_gauges(meter)
+            # On the PRODUCT meter: every name this module declares is in
+            # PRODUCT_METRICS, which a test asserts, so the whole module routes
+            # together. A gauge added there that is not a product metric fails
+            # that assertion, which is the moment to split this call rather than
+            # quietly file a local-only gauge under the product scope.
+            register_inventory_gauges(product_meter)
         except Exception:
             logger.warning("inventory gauges unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent)
+        return _Build(
+            MetricsRecorder(meter, product_meter=product_meter), provider, consent
+        )
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress
