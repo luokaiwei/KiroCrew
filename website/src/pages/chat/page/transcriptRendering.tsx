@@ -265,6 +265,8 @@ export function useTranscriptRendering({
               onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'user', m.content) : undefined}
               onQuoteMessage={activeSlot && !activeSlotRemoteBound ? (shown) => quoteWholeMessage('user', shown, m.ts, messageId) : undefined}
               onJumpToQuote={handleJumpToQuote}
+              senderSessions={connected ? sessionTitles : undefined}
+              onOpenSender={selectSessionTab}
             />
           ) : isInject ? (
             (() => {

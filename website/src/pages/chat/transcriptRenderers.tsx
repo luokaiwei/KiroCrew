@@ -742,6 +742,8 @@ export function createTranscriptRenderers(
                 })}
                 // Delivery mechanics stay in Sessions, including old scrollback.
                 hideSteerBadge={!!crewmate || o.hideSteerBadge}
+                senderSessions={o.sessions}
+                onOpenSender={o.onSessionOpen}
                 // The accent fill pairs with the crewmate's gray bubble above
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.

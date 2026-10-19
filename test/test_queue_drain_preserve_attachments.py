@@ -435,7 +435,8 @@ class TestSteeredAttachments:
         echo = next(
             c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "steer_push"
         )
-        assert echo["meta"] == {"files": [_PATH], "dirs": [_DIR]}
+        # The person's mark rides the frame beside the lists, as it does the row.
+        assert echo["meta"] == {"files": [_PATH], "dirs": [_DIR], "human": True}
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
         _settle_consumed_steers(slot, f"<user_message>\n{_WIRE}\n</user_message>")
@@ -471,7 +472,8 @@ class TestSteeredAttachments:
         echo = next(
             c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "steer_push"
         )
-        assert "meta" not in echo
+        # No list reached the frame; only the person's mark the row carries did.
+        assert echo.get("meta") == {"human": True}
 
     @pytest.mark.asyncio
     async def test_unconsumed_steer_keeps_attachments_through_requeue_and_drain(
