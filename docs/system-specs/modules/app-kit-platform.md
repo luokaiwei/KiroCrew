@@ -2910,6 +2910,16 @@ it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
 URL is left untouched, and no normalisation happens, so a `..` in the asset path
 still reaches the blob route's own rejection.
 
+**Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
+page and its only import path: it loads the app (`load()` resolves the art fields
+described here), holds the page's state, and renders the actions and the info
+cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
+the same-origin gate on that fallback, so new work on the banner, the gallery or its
+lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
+and the manifest and registry-row types it joins), which is where a new view-model
+field goes.
+
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
 the install itself wrote, and the four surfaces that render an installed app's
@@ -3131,7 +3141,8 @@ Writers: builtin `app.json` manifests, `apps/registry_pipeline/manifests.py`
 `apps/routes.py` (`handle_app_art_file`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/components/appstore/useHeroArt.ts`,
-`website/src/pages/AppDetailPage.tsx`, and
+`website/src/pages/AppDetailPage.tsx`,
+`website/src/pages/AppDetailPageArt.tsx`, and
 `website/scripts/check-app-manifest-sync.mjs`.
 
 ## 17. A backend's health is a standing observation, not a startup verdict
