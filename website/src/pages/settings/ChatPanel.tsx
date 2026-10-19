@@ -22,6 +22,7 @@ import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
 import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
 import { AppModelsSection } from './AppModelsSection'
+import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
@@ -445,6 +446,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               )}
             </div>
           )}
+          <FollowDefaultModelAction />
           <SettingsMultiSelect
             label={i18nT('pages.settings.chatPanel.selectable_models')}
             hint={i18nT('pages.settings.chatPanel.selectable_models_description')}

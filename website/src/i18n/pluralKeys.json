@@ -283,5 +283,9 @@
   "commandCenter.crewMain.approvals_open",
   "components.fileRenderers.json_string_show_all",
   "pages.chatPage.closed_sessions_not_deleted",
-  "pages.chatPage.older_sessions_deleted_count"
+  "pages.chatPage.older_sessions_deleted_count",
+  "pages.settings.chatPanel.follow_default_confirm_title",
+  "pages.settings.chatPanel.follow_default_done",
+  "pages.settings.chatPanel.follow_default_model_chats",
+  "pages.settings.chatPanel.follow_default_more"
 ]

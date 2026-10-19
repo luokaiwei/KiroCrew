@@ -338,6 +338,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/agent_switch.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_model.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_model.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # The Settings follow-default confirm carries one field: the count's 64-hex digest.
+    "chat_follow_default.py::api_chat_slots_follow_default": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "chat_api/slot_effort.py::api_chat_slot_reasoning_effort": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,

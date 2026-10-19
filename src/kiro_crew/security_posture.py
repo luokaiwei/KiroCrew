@@ -226,6 +226,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "error surfaces as a 500 rather than an un-redacted board.",
     ),
     (
+        "Chat titles and kept models in the Settings follow-default confirm",
+        "dashboard/chat_follow_default.py",
+        "The titles of the first five chats the Settings follow-default count names, "
+        "and the name of each model those chats keep, on their way to the confirm "
+        "dialog in the browser. A title is LLM-written or the first words a person "
+        "typed, and a closed chat's title and model are read straight from its "
+        "transcript line, so nothing upstream of this answer inspects them. Each "
+        "passes the dashboard's display redaction, `_redact_for_display`; a title "
+        "does so BEFORE it is capped at 200 characters, because a cut taken first can "
+        "split a credential into a stub the patterns no longer match. The raw model "
+        "still drives the clear. Only chats the count already names contribute, and "
+        "the route is owner-only.",
+    ),
+    (
         "Tool-call risk questions sent to the decision judge",
         "decisions/points/tool_risk.py",
         "The tool name, its arguments and the message excerpt that one `tool.risk` "
