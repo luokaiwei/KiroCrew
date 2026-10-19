@@ -400,7 +400,9 @@ class TestHook:
         ]
         echo = next(t for t in texts if "ping" in t)
         assert "<!channel>" not in echo and "<@U999>" not in echo
-        assert "&lt;!channel&gt;" in echo and "&lt;@U999&gt;" in echo
+        # The broadcast stays escaped; the mention is flattened to plain text,
+        # which Slack does not parse as a mention either.
+        assert "&lt;!channel&gt;" in echo and "ping @U999 now" in echo
 
 
 class TestSharedHelper:

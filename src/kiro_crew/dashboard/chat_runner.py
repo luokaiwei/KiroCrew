@@ -1236,6 +1236,26 @@ def _hands_off_queue_on_exit(
     return guarded
 
 
+#: The dashboard -> Slack mirror's working placeholder, posted under the prompt
+#: echo and deleted once the task stream, the answer or the turn's end takes over.
+_MIRROR_THINKING = "💭 _Thinking…_"
+
+
+async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:
+    """Delete the mirror's "Thinking…" placeholder *ts*; return the new (empty) ts.
+
+    Best-effort and never raises: the placeholder is decoration, and a failed
+    delete must not fail a turn that already delivered. Returns ``""`` either
+    way, so the caller stops owing the delete and never repeats it.
+    """
+    if ts and channel:
+        try:
+            await slack_client.delete_message(channel, ts)
+        except Exception:
+            logger.debug("Failed to delete the mirror's Thinking placeholder", exc_info=True)
+    return ""
+
+
 def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
     """Emit the user-message → first-visible-token latency histogram.
 
@@ -2571,6 +2591,11 @@ async def _run_chat(
     # read by the finally so an exit between acquire and release never leaks it.
     turn._dispatch_lock_held = False
     _mirror_stream_ts: str = ""
+    # The task stream opens lazily on the first mirrored tool call; one attempt
+    # per turn, so a stream Slack refuses is not re-requested on every tool.
+    _mirror_stream_tried = False
+    # ts of the mirror's "Thinking…" placeholder; "" once it has been deleted.
+    _mirror_thinking_ts: str = ""
     _mirror_chan: str | None = ""
     _mirror_active_task = ""
     _mirror_active_task_title = ""
@@ -4475,20 +4500,29 @@ async def _run_chat(
                 try:
                     if not _is_synthetic:
                         from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
-                            escape_mrkdwn,
+                            mirror_prompt_echo,
                         )
 
                         # The prompt is not only the operator's keystrokes (a
                         # session_send peer lands here too), and Slack parses
-                        # <!channel> / <@U…> in `text`, so escape at this sink.
-                        _mirror_msg = escape_mrkdwn(_prepare_mirror_msg(_user_msg_for_mirror))
+                        # <!channel> / <@U…> in `text`, so escape at this sink:
+                        # links and channel refs stay live, a user mention is
+                        # flattened so the echo never re-pings, and a broadcast
+                        # or stray bracket is escaped. Redaction runs first.
                         await state.slack_client.post_message(
-                            _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                            _mirror_chan,
+                            mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
+                            _mirror_thread,
                         )
-                    # Start a stream for real-time tool animations
-                    _mirror_stream_ts = (
-                        await state.slack_client.start_stream(
-                            _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                    # A separate placeholder, not the task stream's opening text:
+                    # a stream only appends, so a "Thinking…" written into it stays
+                    # above Slack's own "Thinking completed" plan header for good.
+                    # The stream opens on the first tool call instead, and the
+                    # placeholder is deleted then, before the answer is posted, or
+                    # at turn end, whichever comes first.
+                    _mirror_thinking_ts = (
+                        await state.slack_client.post_message(
+                            _mirror_chan, _MIRROR_THINKING, _mirror_thread
                         )
                         or ""
                     )
@@ -5261,35 +5295,54 @@ async def _run_chat(
                 # stream's destination is the thread cached at turn start, judged
                 # as the room it is beside the live comparison.
                 if (
-                    _mirror_stream_ts
+                    _mirror_chan
+                    and _mirror_thread
+                    and state.slack_client
                     and not cross_surface_withheld(state, slot)
                     and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
                 ):
                     try:
-                        if _mirror_active_task:
+                        if not _mirror_stream_tried:
+                            # First mirrored tool: the task stream takes over from
+                            # the "Thinking…" placeholder, whose line would
+                            # otherwise sit above the plan's own header for good.
+                            _mirror_stream_tried = True
+                            _mirror_stream_ts = (
+                                await state.slack_client.start_stream(_mirror_chan, _mirror_thread)
+                                or ""
+                            )
+                            if _mirror_stream_ts:
+                                _mirror_thinking_ts = await _retire_mirror_thinking(
+                                    state.slack_client, _mirror_chan, _mirror_thinking_ts
+                                )
+                    except Exception:
+                        logger.debug("Mirror task stream start failed", exc_info=True)
+                    if _mirror_stream_ts:
+                        try:
+                            if _mirror_active_task:
+                                await state.slack_client.append_task(
+                                    _mirror_chan,
+                                    _mirror_stream_ts,
+                                    _mirror_active_task,
+                                    _mirror_active_task_title,
+                                    "complete",
+                                )
+                            _mirror_task_counter += 1
+                            _mirror_active_task = f"tool_{_mirror_task_counter}"
+                            _task_title = event.tool_purpose or event.title
+                            _task_title, _ = redact_exfiltration_urls(_task_title)
+                            _task_title, _ = redact_credentials(_task_title)
+                            _task_title = _task_title[:75]
+                            _mirror_active_task_title = _task_title
                             await state.slack_client.append_task(
                                 _mirror_chan,
                                 _mirror_stream_ts,
                                 _mirror_active_task,
-                                _mirror_active_task_title,
-                                "complete",
+                                _task_title,
+                                "in_progress",
                             )
-                        _mirror_task_counter += 1
-                        _mirror_active_task = f"tool_{_mirror_task_counter}"
-                        _task_title = event.tool_purpose or event.title
-                        _task_title, _ = redact_exfiltration_urls(_task_title)
-                        _task_title, _ = redact_credentials(_task_title)
-                        _task_title = _task_title[:75]
-                        _mirror_active_task_title = _task_title
-                        await state.slack_client.append_task(
-                            _mirror_chan,
-                            _mirror_stream_ts,
-                            _mirror_active_task,
-                            _task_title,
-                            "in_progress",
-                        )
-                    except Exception:
-                        logger.debug("Mirror tool task failed", exc_info=True)
+                        except Exception:
+                            logger.debug("Mirror tool task failed", exc_info=True)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
                 if (
                     event.is_shell
@@ -10692,6 +10745,11 @@ async def _run_chat(
                 # entirely to to_slack_mrkdwn's self-truncation.
                 _mirror_body, _mirror_options = extract_options(turn.assistant_text)
 
+                # The answer starts here, so the "Thinking…" placeholder (still
+                # up on a turn that ran no tool) goes before the answer lands.
+                _mirror_thinking_ts = await _retire_mirror_thinking(
+                    state.slack_client, _mirror_chan, _mirror_thinking_ts
+                )
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
@@ -12767,6 +12825,13 @@ async def _run_chat(
                     await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
+            if _mirror_thinking_ts and state.slack_client and _mirror_chan:
+                # A turn that ended with neither a tool nor a mirrored answer
+                # (an error, a cancel, a withheld reply) still owes the thread
+                # its placeholder's removal. Best-effort and never raises.
+                _mirror_thinking_ts = await _retire_mirror_thinking(
+                    state.slack_client, _mirror_chan, _mirror_thinking_ts
+                )
             if _acquired and (needs_session_reset or needs_conversation_discard):
                 # Neither branch below goes through `_reset_slot_session`, so the
                 # withhold verdict is dropped here: both replace the session that
