@@ -280,12 +280,15 @@ baselined -- only when its `opened_ts` is strictly greater than
 ties the evicted marker (the evicted session itself, seen again) reads as
 not-new rather than as new. Every other first sight is BASELINED instead: the
 current render becomes the floor and nothing is emitted, so a restart or an
-eviction replay never re-adds a total already exported.
+eviction replay never re-adds a total already exported. Because both sides of
+this test are wall-clock times, it assumes the clock does not step backward
+across a restart; the one case where it does is named after the under-count
+cases below.
 
 A session that is NEW on first sight is counted WHOLE, diffed against zero
 rather than baselined: `session.started` adds one, and every turn already
-present in that first render adds its full count (including the depth S2
-observes), because a new session's opening and its first turn can arrive in
+present in that first render adds its full count (and, for S2, so do the
+session's depth and any child it has already created), because a new session's opening and its first turn can arrive in
 the same coalesced fold batch, and diffing against zero is what keeps that
 first turn from being lost to a baseline. Every later delivery for a session,
 new or not, diffs turns against the stored floor the way section 4.6
@@ -296,7 +299,7 @@ One correction against an over-broad claim this document made earlier.
 restart logic adds, and both are plain integers -- but the per-session memo
 section 4.6 describes (`_last_values`, keyed by `(fold_name, session_key)`)
 does hold the session id, in memory, for as long as that session is tracked
-(bounded by `_MAX_TRACKED_SESSIONS`, section 4.4's eviction cap). Its value is
+(bounded by `_MAX_TRACKED_SESSIONS`, this section's eviction cap). Its value is
 the fold's own render, which by section 4.5 is already the closed
 `agent_kind` enum and fixed numbers -- no raw agent name passes through this
 memo, because none ever reaches the fold's render for it to copy. That memo
@@ -308,7 +311,8 @@ and about what the memo's VALUE never contains (a raw name), not about
 holding no session identifier at all -- the session id itself is the memo's
 key, in memory, for as long as a session is tracked.
 
-The rule is never over-count. **After a restart, a session that was already
+The rule is never over-count, with one known exception (a backward clock
+step across a restart) named after the cases below. **After a restart, a session that was already
 open keeps being used, and the turns it commits land in the first fold batch
 this process folds for it; that whole batch becomes the baseline and is not
 counted, because it is diffed against nothing rather than against zero.**
@@ -340,11 +344,32 @@ Both land on the same side: a count the export reports as `N` is a floor the
 true count never falls below, never a ceiling it can exceed, which is the
 direction a monotonic counter can carry safely. That floor is also a choice
 this document surfaces rather than settles -- question 9 in section 11 asks
-the OSS team whether it is an acceptable one. The session tree depth
-histogram that S2 ([#21273](https://github.com/kirodotdev/KiroCrew/issues/21273))
-adds rides the same new-vs-baseline test on the same `opened_ts`, so a
-session's depth observation is kept or dropped by the identical rule its
-session-start count is, and carries the same two cases.
+the OSS team whether it is an acceptable one.
+
+**One case breaks the never over-count rule: a backward clock step across a
+restart.** `opened_ts` and `_install_ms` are both wall-clock times. If the
+system clock steps backward between the old process and the new one (a time
+sync correction, a manual change, a host resumed from a snapshot), the new
+`_install_ms` can be earlier than the `opened_ts` of a session that was
+already open. That session then reads as NEW on first sight and is counted
+whole: its session start, every turn already in its render and, for S2, its
+depth add and the children it has already created are added again on top of
+what the earlier process exported. The over-count is bounded. It needs a
+backward step across a restart, it touches only sessions open across that
+restart whose `opened_ts` is later than the new `_install_ms`, and each such
+session is recounted at most once: after its first sight its render is the
+stored floor, and if it is evicted and seen again its `opened_ts` is no longer
+above `_evicted_max_opened_ts`. Removing the case needs a log-ordered marker
+in place of the wall-clock comparison, which this round does not build. The
+design accepts it as a known limit, and question 9 in section 11 asks the OSS
+team to accept it together with the under-count floor. The two session tree counters
+that S2 ([#21273](https://github.com/kirodotdev/KiroCrew/issues/21273)) adds
+ride the same new-vs-baseline test on the same `opened_ts`, so a session's
+depth add, and the child adds of a session that creates others, are kept or
+dropped by the identical rule its session-start count is, and carry the same
+two cases. The child count itself lives in the fold's savepoint, so a creator
+resumed after a restart is baselined once and its next child is still counted
+at its true ordinal.
 
 One correction is owed alongside the first implementation: the module docstring in
 `crew_log/eager.py` describes a savepoint for a slot fold as something that "would
@@ -354,13 +379,33 @@ rather than here, because it is a code comment.
 
 ## 5. What this round adds
 
-| Metric | Type | Attributes | Where the number comes from |
-|---|---|---|---|
-| session starts by agent kind | counter | `agent_kind`, folded from `session/opened.agent` per section 4.5 | the `session/opened` entry |
-| turn starts by actor | counter | `actor`, the declared `ACTOR_VALUES` | the `turn/started` entry |
-| session tree depth | histogram | none | the `depth` field on `session/opened` |
-| session tree roots | observable gauge | none | `count_roots_with_children`, a new reader S2 adds to the session tree projection, scanned on each OpenTelemetry collect |
-| export lag | histogram | none | the subscriber timing its own callback, sampled only on a delivery for one of its own folds |
+| Metric | Name | Type | Attributes | Where the number comes from |
+|---|---|---|---|---|
+| session starts by agent kind | `kirocrew.crew.session.started` | counter | `agent_kind`, folded from `session/opened.agent` per section 4.5 | the `session/opened` entry |
+| turn starts by actor and agent kind | `kirocrew.crew.turn.started` | counter | `actor`, the declared `ACTOR_VALUES`; `agent_kind`, the same closed set as session starts, for the session the turn ran in | the `turn/started` entry, attributed from the session's own `otel_usage` fold state (never the raw agent name), so turns inside conductor and worker sessions can be counted apart |
+| session tree depth | `kirocrew.crew.session.tree.depth` | counter | `depth`, one of `0`, `1`, `2`, `3+` | the `depth` field on `session/opened`; one add per session |
+| session tree children | `kirocrew.crew.session.tree.child` | counter | `parent_kind`, the creator session's `agent_kind`; `nth`, one of `1`, `2`, `3`, `4-7`, `8+` | the `session/spawned` entries on the creator's own log; one add per child |
+| session tree roots | `kirocrew.crew.session.tree.roots` | observable gauge | none | `count_roots_with_children`, a new reader S2 adds to the session tree projection, scanned on each OpenTelemetry collect |
+| export lag | `kirocrew.crew.export.lag` | histogram | none | the subscriber timing its own callback, sampled only on a delivery for one of its own folds |
+
+Depth is a counter with a bucket label rather than a histogram so the
+distribution survives backends that do not keep explicit histogram buckets: a
+count per label is a plain sum any backend keeps. The labels are a closed set,
+so the attribute's cardinality does not grow with the deepest tree.
+
+The child counter answers how wide trees get without waiting for a creator to
+end. `nth` is the child's ordinal among its creator's children, so the number of
+creators with at least `k` children is the sum of the adds at `nth >= k`, and the
+width distribution is read off a counter. The ordinal is a count the creator's
+own fold keeps: `session/spawned` is written on the creator's log once per child
+at creation time (`crew_log/entry_types_lifecycle.py`), so the `otel_session_tree`
+fold adds one per entry and the export turns the move from one total to the next
+into per-bucket adds. No parent link is walked and no child identity is held; the
+fold's state is that integer, the session's depth and opening time, and its own
+closed `agent_kind`, folded in `step` with the same classifier section 4.5
+describes and stored only as the enum. The ordinal is counted per creator
+session log, the same unit `session.started` counts, so a slot that moves to a
+fresh session log starts a new count.
 
 The roots metric reads the tree structure that already lives in the session
 tree projection; it does not keep that structure in a counting fold. This is
@@ -416,13 +461,15 @@ once per tree is the same count-once problem a roots counter would have had,
 and a size gauge read off the projection the same way is a reasonable next-round
 metric; it is left for the phase that adds it rather than specified here.
 
-Exact metric names and histogram bucket boundaries are **as in the implementation
-pull requests** for [#21272](https://github.com/kirodotdev/KiroCrew/issues/21272)
-(session and turn counts) and
-[#21273](https://github.com/kirodotdev/KiroCrew/issues/21273) (the session tree).
-This document fixes no number: a bucket boundary is measured against real logs, not
-chosen in prose, and a name invented here would be a second source of truth for it.
-Names live in the `NS_CORE` namespace that `metrics/schema.py` enforces.
+The names and attributes in the table match the implementation pull requests
+for [#21272](https://github.com/kirodotdev/KiroCrew/issues/21272) (session and
+turn counts) and [#21273](https://github.com/kirodotdev/KiroCrew/issues/21273)
+(the session tree); if the two ever differ, the pull requests are the source of
+truth. This document fixes no histogram boundary: the one histogram left, export
+lag, has its boundaries measured against real installs, not chosen in prose. The
+depth and `nth` labels are a fixed vocabulary for the question each counter
+answers, not a measurement. Names live in the `NS_CORE` namespace that
+`metrics/schema.py` enforces.
 
 Two notes on the new field. `session/opened` declares no `depth` today, so
 [#21273](https://github.com/kirodotdev/KiroCrew/issues/21273) adds one; it is a
@@ -460,8 +507,8 @@ abandonable, because each adds one fold and the metrics that read it.
 
 | # | Phase | Exit criteria | This round |
 |---|---|---|---|
-| S1 | The export subscriber, plus the first counting fold: session starts by agent kind, turn starts by actor ([#21272](https://github.com/kirodotdev/KiroCrew/issues/21272)) | With the gate off, no instrument is created and no fold state is written. With it on, the two counters appear in the local sink and the `agent_kind` mapping emits no operator-written name. The export reports its own callback time. | pull request |
-| S2 | Session tree: a `depth` field on the opening entry, a depth histogram, and a roots observable gauge read off the session tree projection on each collect ([#21273](https://github.com/kirodotdev/KiroCrew/issues/21273)) | An entry written before the field exists still folds, reported as unknown depth rather than zero. The append path gains no lookup. The roots gauge adds nothing to the writer thread or the bus; the count is scanned on the collect thread (bounded by `TREE_UNIT_CAP`), and no counting fold holds a session id. An unseeded or incomplete tree produces no observation rather than a `0`. | pull request |
+| S1 | The export subscriber, plus the first counting fold: session starts by agent kind, turn starts by actor and agent kind ([#21272](https://github.com/kirodotdev/KiroCrew/issues/21272)) | With the gate off, no instrument is created and nothing is exported or recorded; the `otel_usage` fold still runs as an ordinary eager fold, and its state holds only numbers and closed-set values. With it on, the two counters appear in the local sink and the `agent_kind` mapping emits no operator-written name. The export reports its own callback time. | pull request |
+| S2 | Session tree: a `depth` field on the opening entry, a depth counter by bucket, a child counter by creator kind and ordinal, and a roots observable gauge read off the session tree projection on each collect ([#21273](https://github.com/kirodotdev/KiroCrew/issues/21273)) | An entry written before the field exists still folds, reported as unknown depth rather than zero. The append path gains no lookup. The roots gauge adds nothing to the writer thread or the bus; the count is scanned on the collect thread (bounded by `TREE_UNIT_CAP`), and no counting fold holds a session id. An unseeded or incomplete tree produces no observation rather than a `0`. | pull request |
 | S3 | Sessions open at once | The count returns to zero after every session in a run is closed, including a session that was killed and wrote no closing entry. The source for a session that died without writing `session/closed` is named in section 11, question 6, before this phase is scoped. | later |
 | S4 | Work ledger: nesting, item states, and how long a report waits to be accepted | written when the phase is scoped | later |
 | S5 | Shared MCP: which route a tool call took | written when the phase is scoped | later |
@@ -509,7 +556,7 @@ that call and never reaches the fold's state, render or savepoint. The one
 value this round's design does hold, in memory, is the session key the
 export's per-session memo (section 4.6) uses to tell one session's delivery
 from another's -- not a name, an identifier the design needs to compute a
-delta at all, bounded the way section 4.4 states and never written to disk by
+delta at all, bounded by the eviction cap section 4.7 states and never written to disk by
 this module. The `crewmate` bucket READS one more free-form value -- the
 opening entry's `slot` field, which carries a member slug -- and retains it
 the same way it retains the agent name: not at all. It is a local inside
@@ -518,7 +565,9 @@ directories and MCP server names are values a future phase's fold could be
 tempted to retain; this round's design retains none of them, and the rule
 that confines a future fold
 the same way an attribute value is confined -- closed set, classified before
-it is stored -- is the bar section 4.4 and 4.5 set for this round and the one
+it is stored -- is the bar sections 4.4 (what a counting fold may hold) and
+4.5 (closed sets) set for this round, with the memo's eviction cap in section
+4.7, and the one
 a later phase has to clear too.
 
 **A counting fold is a new reader of crew log entries.** It must read only
@@ -573,13 +622,17 @@ under-count case section 4.7 names -- a savepoint resume would be correct by
 construction instead of correct because of a markers-and-floor argument.
 
 Not adopted this round, for two reasons this document has not fully worked
-through and leaves for design review to weigh rather than deciding here. One
-fold's state would then be a running total **per session that has ever
-existed**, not per session currently tracked -- the replay cost of resuming
-that fold from a savepoint on a long-lived install needs to be measured
-against the bounded, evictable state a per-session fold keeps today, not
-assumed free because the counter instrument hides it from the export layer.
-And a single fold answering for every `agent_kind`/`actor` pair at once is
+through and leaves for design review to weigh rather than deciding here. The
+state is not the cost: totals keyed by `agent_kind` and `actor` are a small
+fixed set of numbers, the same size however many sessions have existed. The
+cost is where such a fold could live. `crew_log/projection_registry.py`
+only admits an eager fold named in `EAGER_SLOT_FOLD_NAMES` or
+`EAGER_SESSION_FOLD_NAMES` (section 4.3), so every eager fold is scoped to
+one slot or one session log, and each of those two families has its own warm
+path (the slot memo or the session memo). An eager fold with any other key is
+refused at import. A process-wide fold over every session's log would need a
+third family with its own warm path, which is new projection-layer machinery
+rather than one more counting fold. And a single fold answering for every `agent_kind`/`actor` pair at once is
 close to the "one export projection for everything" shape section 4.3
 rejects -- not identical (this is one module's own fold, not a projection
 shared across modules), but the same question of blast radius applies: does
@@ -636,7 +689,8 @@ abstract.
    a declared field `session/opened` already carries, so the bucket needs no new
    field and no crew-config lookup -- and the slot itself is read inside `step`
    and never stored.
-9. **Is the export's under-count floor acceptable?** The main case: after a
+9. **Is the export's under-count floor acceptable, and its one bounded
+   over-count case?** The main case: after a
    restart, a session that was already open keeps being used, and the
    turns it commits land in the first fold batch this process folds for
    it; that whole batch becomes the baseline and is not counted, because it
@@ -649,7 +703,8 @@ abstract.
    (case 1, the specific instance of the restart case above); and once the
    4096-entry eviction cap saturates, a never-seen session opened no later
    than an already-evicted one is baselined the same way (case 2). All of
-   these are a floor the true count never exceeds, never a double-count,
+   these are a floor the true count never exceeds, never a double-count
+   (the clock-step case at the end of this question is the one exception),
    but a maintainer reading the exported number may not expect "session
    starts" to silently exclude every session alive at boot, or a
    long-lived session's turn count to go quiet across a restart and resume
@@ -664,4 +719,23 @@ abstract.
    for the OSS team to weigh here -- this question is about the design as
    it stands. We would rather have the floor named and accepted than have
    a maintainer discover it by noticing the counters read low after every
-   restart.
+   restart. The S2 counters carry the same floor: `session.tree.depth`
+   skips a session alive at boot, and `session.tree.child` skips the
+   children a creator alive at boot made in its first post-restart batch.
+   Later children of that creator are still counted, at their true `nth`,
+   because the child count resumes from the fold's savepoint. One case runs
+   the other way and is accepted here as a known limit (section 4.7): if the
+   system clock steps backward across a restart, a session already open can
+   carry an `opened_ts` later than the new `_install_ms`, read as new, and be
+   counted whole a second time. It is bounded to sessions open across a
+   restart with a backward clock step, each recounted at most once; removing
+   it needs a log-ordered marker in place of the wall-clock comparison, which
+   this round does not build.
+10. **Is a per-session-log child ordinal the right unit?** `nth` on
+   `session.tree.child` counts children within one creator session log,
+   the same unit `session.started` counts. A slot that moves to a fresh
+   session log starts its count again at `1`, so a long-lived slot that
+   delegates across several logs reads as several narrower creators. We
+   chose the session log because it needs no join across logs; a
+   per-slot count would need a slot-keyed fold, which this round does not
+   subscribe to.
