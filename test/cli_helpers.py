@@ -1,18 +1,127 @@
-"""Support shared by ``test_cli.py`` and the files split out of it
-(``test_cli_chat_permission.py`` and ``test_cli_chat_consent_surface.py``).
+"""Support shared by ``test_cli.py`` and the ``test_cli_<topic>.py`` parts split out of it.
 
 ``_doctor_reads_the_warm_probe_cache`` is ``test_cli.py``'s autouse fixture; its docstring's
-"here" and "this file" mean ``test_cli.py``, whose doctor tests it serves. Each of these files
-binds it by import, so every test of the family runs under the same autouse stub.
-``_TestChatPermissionRequestHarness`` holds the members both chat permission classes read.
+"here" and "this file" mean ``test_cli.py`` and the doctor parts, whose doctor tests it serves.
+Each of these files binds it by import, so every test of the family runs under the same autouse
+stub. The doctor tests' helpers (``_noop_probe_server``, ``_write_agent_config``,
+``_healthy_agent_file``, ``_pin_default_config``; the latter's "this file" means the same) serve
+``test_cli.py`` and the two doctor parts, and ``_TestChatPermissionRequestHarness`` holds the
+members both chat permission classes read.
 """
 
 import asyncio
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
+
+
+async def _noop_probe_server(server):
+    """Default probe stub for tests that call ``_doctor()`` but aren't
+    specifically exercising the MCP handshake. Marks the target healthy
+    so doctor renders the MCP section cleanly without spawning a real
+    child process.
+
+    Tests that care about specific probe outcomes (success with tool
+    count, failure with stderr, etc.) build their own probe mocks via
+    ``TestDoctorMcpTools._mock_probe``.
+    """
+    server.status = "ok"
+    server.tools = []
+    return server
+
+
+def _write_agent_config(path: Path, *, tools: list[str], allowed: list[str], servers: dict) -> None:
+    """Write a ``kirocrew.json`` agent config with the given managed
+    servers + tool references. Typed keyword arguments make it obvious
+    which fields each test cares about.
+    """
+    path.write_text(
+        json.dumps(
+            {
+                "name": "kirocrew",
+                "tools": tools,
+                "allowedTools": allowed,
+                "mcpServers": servers,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _healthy_agent_file(path: Path) -> None:
+    """Write a ``kirocrew.json`` whose managed MCP servers are all present
+    so ``_doctor()``'s MCP section passes its static config check and only
+    the (mocked) live probe remains. Used by doctor tests that exercise an
+    unrelated section and must not trip the MCP exit path on an empty config.
+
+    The server set is DERIVED from the same registry ``cli_doctor`` iterates
+    (``mcp_cleanup.KIROCREW_BIN_MCP_SERVERS``) rather than hardcoded: doctor
+    reports every managed server missing from ``mcpServers`` as an issue and
+    exits 1, so a literal list here silently rots the moment a managed server is
+    added — which is exactly how these fixtures broke when ``kirocrew-computer``
+    landed.
+    """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    refs = [f"@{name}" for name in KIROCREW_BIN_MCP_SERVERS]
+    _write_agent_config(
+        path,
+        tools=refs,
+        allowed=refs,
+        servers={
+            name: {
+                # sys.executable, not a literal like /usr/local/bin/kirocrew:
+                # doctor's dead-path scan stats every absolute command for real
+                # (no shutil.which stub covers it), so the fixture's "healthy"
+                # spec must name a binary that actually exists on the runner.
+                "command": sys.executable,
+                # The subcommand is the server name minus the "kirocrew-" prefix
+                # ("kirocrew-core" -> "mcp-core"), matching the real invocation.
+                "args": [f"mcp-{name.split('-', 1)[1]}"],
+            }
+            for name in KIROCREW_BIN_MCP_SERVERS
+        },
+    )
+
+
+def _pin_default_config(monkeypatch) -> None:
+    """Make ``_doctor()``'s config read hermetic for doctor tests.
+
+    ``_doctor()`` calls the real ``KiroCrewConfig.load()`` / ``load_credentials()``,
+    which read the shared ``~/.kirocrew`` config at runtime. ``KiroCrewConfig.save()``
+    writes that same shared path non-atomically, so under ``pytest -n auto`` a
+    concurrent worker's config write races these reads: a polluted/foreign config
+    flips a check and ``_doctor()`` exits 1. xdist worker interleaving differs per
+    interpreter, so the flake surfaced only on python3.10. Pin both to a pristine
+    default (Slack-less) so doctor runs are deterministic and isolated.
+
+    Speech-to-Text is switched off on top of the defaults, where it ships ON. Its
+    section reports the recogniser, which lives in the optional ``voice`` extra, so
+    leaving it enabled makes every doctor test in this file depend on whether the
+    runner installed that wheel, and on POSIX an absent one is a hard issue: the
+    tests asserting ``_doctor()`` does not exit would then report the host rather
+    than the behaviour they name. The STT arms pin it back on for themselves.
+
+    The harness is pinned to kiro-cli: a fresh config defaults to KAS, whose
+    engine check needs a kiro-cli with ``--agent-engine`` that the stubbed
+    ``kiro-cli 1.0.0`` does not report.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _pristine() -> KiroCrewConfig:
+        cfg = KiroCrewConfig()
+        cfg.stt.enabled = False
+        cfg.agent.acp_backend = ACP_BACKEND_KIRO
+        return cfg
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
+    monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
 
 
 @pytest.fixture(autouse=True)

@@ -1271,7 +1271,7 @@ The contract:
 Pinned by `test_platform_compat.py::TestLineBufferedStdout` (a non-tty
 `TextIOWrapper` holds the bytes of one unflushed `print()`; a tty stream is
 not reconfigured; a stream without `reconfigure` does not raise) and
-`test_cli.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
+`test_cli_main_entry.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
 (the dispatch calls the seam once, before the gateway coroutine exists).
 
 ### Linux gateway heap reclamation
@@ -1754,7 +1754,7 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
    foreign holder. The legacy dotted spawn (`-m kiro_crew.gateway`) is recognised by
    `stop` only; the desktop launcher does not match it and never has, so a service
    unit spelled that way reads as a foreign holder on the desktop.
-   `test/test_cli.py::TestDesktopGatewayIdentityParity` pins the desktop copy of the
+   `test/test_cli_stop.py::TestDesktopGatewayIdentityParity` pins the desktop copy of the
    subcommand set and module pattern to the Python side, so widening one without the
    other fails a test instead of a user. When a listener exists but none of the pids classify,
    `stop` names the pid(s) — with the cmdline basename when cheap — and exits 1 with SEL

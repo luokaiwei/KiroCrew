@@ -1754,7 +1754,7 @@ def _restore_default_child_watcher():
 
     Some tests install a real, non-default asyncio child watcher via the
     gateway's ``_install_child_watcher()`` -- notably
-    ``test_cli.py::test_real_subprocess_works_after_install_on_linux``, which on
+    ``test_cli_main_entry.py::test_real_subprocess_works_after_install_on_linux``, which on
     Linux installs a ``PidfdChildWatcher`` and runs ``asyncio.run``. On exit,
     ``asyncio.run`` detaches the watcher's loop, leaving a loop-less watcher in
     the global policy. Two distinct failures follow from that leak, and which

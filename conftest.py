@@ -2431,7 +2431,7 @@ def _restore_log_queue_listener():
     Measured: two tests in ``test_cli_logging.py`` assert that global is ``None`` after a
     short-lived setup -- ``TestDrainBeforeHardExit::test_no_listener_is_a_silent_no_op``
     and ``TestQueueOffLoop::test_short_lived_command_keeps_sync_handler`` -- and both go
-    red whenever ``test_cli.py`` or ``test_cpp_seam_failclosed.py`` precede them on the
+    red whenever ``test_cli_main_entry.py`` or ``test_cpp_seam_failclosed.py`` precede them on the
     worker, reading ``assert <QueueListener object ...> is None``. That file's own
     ``_pristine_logging`` cannot absorb it: it clears the global in TEARDOWN only, which
     makes the file self-clean but leaves it defenceless against a leak that is already
@@ -2572,7 +2572,7 @@ def _restore_logger_levels():
 
     Measured: ``test_slack_gateway_more_coverage.py::TestDeliverCronResponse::
     test_options_post_failure_still_delivers_text`` asserts on a ``logger.debug`` line and
-    reds whenever ``test_cli.py::TestCronCli::test_cli_argparse_cron_add_agent_flag``
+    reds whenever ``test_cli_cron.py::TestCronCli::test_cli_argparse_cron_add_agent_flag``
     shares its worker -- an ARGPARSE test, in a file with no connection to Slack. It
     drives the real ``cli.main()``, whose ``_setup_cli_logging`` pins ``kiro_crew`` at
     WARNING, exactly as production does once per process and never undoes. Test modules
