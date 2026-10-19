@@ -1351,6 +1351,17 @@ Contract:
 
 ## Settings import (dashboard Merge)
 
+**Module layout.** `portability.py` is the import path for every `portability` name
+this section cites, and it keeps the import itself: `apply_import_zip` and the settings
+and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
+`_merge_sessions`). It is a `kiro_crew._facade_mirror` facade over four owners, and new
+work goes to the one that owns it: `portability_archive.py` (what an archive holds,
+member names and limits both ways), `portability_templates.py` (agent templates, bundled
+on export and installed on import), `portability_export.py` (the export walk and
+`create_export_zip`) and `portability_vetting.py` (`validate_import_zip` and the staged
+cron and store checks). A patch of `portability.<name>` reaches every owner holding the
+name.
+
 **HTTP refusals** of `/api/portability/*` (`dashboard/handlers/portability.py`)
 each carry a machine-readable `code`: `file_field_required` (400),
 `invalid_import_mode` (400), `import_archive_invalid` (400, with the validator's
