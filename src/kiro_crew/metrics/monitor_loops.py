@@ -8,7 +8,7 @@ interval read identically. These four counters close that gap.
 =========================================  ===================================
 counter                                    one increment per
 =========================================  ===================================
-``kirocrew.autonudge.loops.started``       loop CREATED by a mutation
+``kirocrew.autonudge.loops.started``       loop that went from inactive to active
 ``kirocrew.autonudge.ticks``               tick that reached a decision
 ``kirocrew.autonudge.loops.stopped``       loop that went inactive or vanished
 ``kirocrew.monitor.decisions``             ``decide_monitor`` policy evaluation
@@ -18,24 +18,34 @@ The first number to read is the ratio of ``quiet`` to ``delivered`` ticks: it
 says whether the probe gate is earning its keep or whether loops are spending a
 model turn on every interval.
 
-**A restart does not re-count a start.** ``loops.started`` is emitted by the two
-creation mutations and nowhere else -- the prompt arm
-(``autonudge_service/mutations.py``) and the structured monitor arm
-(``autonudge_service/monitor_records.py``) -- each after its own store write has
-committed. The restore path rebuilds loops from the store file without going
-near either, so a gateway that boots with nine persisted loops adds nothing to
-this counter, which is what makes it a count of ARMS rather than a count of arms
-plus restarts. Both paths matter: a structured monitor's stop IS counted, so
-leaving its arm out would let stops outnumber starts for ``kind=monitor``.
+**Starts and stops are counted per transition, so they stay paired.** A loop
+can be paused and resumed many times, and each active period ends in a stop, so
+``loops.started`` counts every inactive-to-active transition, not only the
+first arm. Four mutations make that transition and each counts it after its own
+store write has committed: the prompt arm (``autonudge_service/mutations.py``
+``_add_unserialized``), the structured monitor arm
+(``autonudge_service/monitor_records.py`` ``_add_monitor_locked``), a revival
+through ``update`` with ``active=True`` (a user resume, and the Issue Radar and
+Research Lab reconcilers re-arming an inactive loop on every pass), and
+``restore_monitor_after_failed_session_close``. ``rollback_monitor_replacement``
+also counts one when the displaced row it writes back is active, because the
+replacement's commit removed that row's id and the store counted it as a stop.
+Leave any one of them out and a pause, a resume and a later stop record one
+start and two stops.
 
-**A stop is counted once however it was reached.** The source is the store's one
-commit point, which diffs the loops that were active in the last committed store
-against the rows just written (``autonudge_stop_log.stop_records``). A loop can
-only cross from active to not-active once, so a second ``autonudge_stop`` on an
+**A restart does not re-count a start.** The restore path rebuilds loops from
+the store file without going near any of those mutations, so a gateway that
+boots with nine persisted loops adds nothing to this counter.
+
+**A stop is counted exactly once per active-to-inactive transition, however it
+was reached.** The source is the store's one commit point, which diffs the loops
+that were active in the last committed store against the rows just written
+(``autonudge_stop_log.stop_records``). A second ``autonudge_stop`` on an
 already-stopped loop produces no record and no increment, and the dozen stop
 paths -- the cycle cap, a spent runtime budget, an unanswered approval, a user
 delete, a closed session, an agent's own call -- cannot double-count between
-them.
+them. A loop that is resumed and stopped again is stopped twice, and was
+started twice.
 
 **What ``ticks`` observes, and what it does not.** It observes the PROMPT
 delivery tick: a plain loop, and a prompt loop whose probe gate watches a
@@ -318,15 +328,16 @@ def _emit(name: str, attrs: dict[str, str | int | bool | float]) -> None:
 
 
 def record_loop_started(loop: Any) -> None:
-    """One loop was ARMED. Call after a creation mutation's write commits.
+    """One loop went from inactive to active. Call after that write commits.
 
-    Both arm paths call it -- the prompt arm and the structured monitor arm --
-    because both are matched by a stop that IS counted, and a start missing from
-    one of them would let stops outnumber starts.
+    Called by both arm paths, by a revival in ``update``, by the restore after
+    a failed session close and by a replacement rollback that writes an active
+    row back, because every one of those transitions is matched by a stop that
+    IS counted, and a start missing from any of them would let stops outnumber
+    starts.
 
-    Not called by the restore path, and not by a rollback that puts a displaced
-    row back: both describe a loop that was armed once and is already counted,
-    and counting either again would turn restart frequency into apparent demand.
+    Not called by the restore path at boot: it rebuilds rows the store already
+    holds, and counting them would turn restart frequency into apparent demand.
     """
     _emit(LOOPS_STARTED, {"kind": loop_kind(loop)})
 

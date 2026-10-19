@@ -475,14 +475,15 @@ async def _add_unserialized(
             self._revoke_self_arm_for(existing)
             self._emit("removed", existing)
     self._emit("added", loop)
-    # Counted HERE and nowhere else, which is what makes the number a count of
-    # ARMS. The store write above has committed and its rollback window has
-    # closed, so a refused admission, a 409 on an existing record or a failed
-    # persist leaves this counter untouched; and the restore path rebuilds loops
-    # from the store file without reaching this function, so a gateway restart
-    # that brings nine persisted loops back adds nothing. Outside the lock, with
-    # the ``added`` event: it is an in-memory add either way, and nothing holding
-    # the service lock should wait on it.
+    # One of the inactive-to-active transitions ``loops.started`` counts (the
+    # others are the structured arm, a revival in ``update`` and the restore
+    # after a failed session close). The store write above has committed and
+    # its rollback window has closed, so a refused admission, a 409 on an
+    # existing record or a failed persist leaves this counter untouched; and the
+    # restore path rebuilds loops from the store file without reaching this
+    # function, so a gateway restart that brings nine persisted loops back adds
+    # nothing. Outside the lock, with the ``added`` event: it is an in-memory add
+    # either way, and nothing holding the service lock should wait on it.
     monitor_loop_metrics.record_loop_started(loop)
     logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
     return loop
@@ -1253,6 +1254,15 @@ async def _update_unserialized(
             if loop.active and (loop.next_due_ts > 0 or revived):
                 self._arm_from_deadline(loop)
     self._emit("updated", loop)
+    if revived:
+        # A revival is an inactive-to-active transition, and the store's commit
+        # point counts the matching active-to-inactive one as a stop, so it is
+        # counted as a start here. Without it a pause and a resume followed by
+        # a later stop would record one start and two stops -- and the Issue
+        # Radar and Research Lab reconcilers revive inactive loops on every
+        # pass. After the write above has committed, so a failed persist (which
+        # raised) counts nothing; a refused revival returned before this point.
+        monitor_loop_metrics.record_loop_started(loop)
     return loop
 
 

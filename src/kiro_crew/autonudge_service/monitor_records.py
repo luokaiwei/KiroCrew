@@ -318,8 +318,9 @@ async def _add_monitor_locked(
     # ``_add_unserialized``, so without this its stop would be counted with no
     # matching arm and stops could outnumber starts for ``kind=monitor``. Placed
     # after the snapshot write has committed, so a rolled-back arm counts
-    # nothing. ``rollback_monitor_replacement`` deliberately does NOT count the
-    # row it restores: that loop was armed once and is already counted.
+    # nothing. ``rollback_monitor_replacement`` counts the row it restores
+    # only when that row is active, because the replacement's commit counted
+    # its removal as a stop.
     monitor_loop_metrics.record_loop_started(loop)
     return loop
 
@@ -392,6 +393,13 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
         self._emit("removed", removed)
     if prior is not None:
         self._emit("added", prior)
+        if prior.active:
+            # The replacement commit removed this row's id from the store, and
+            # the store counted that as a stop; writing it back active is the
+            # matching transition, so it counts as a start and the prior row's
+            # own later stop stays paired. An inactive prior row was already
+            # inactive before the replacement, so neither side counted it.
+            monitor_loop_metrics.record_loop_started(prior)
     return True
 
 
@@ -686,6 +694,7 @@ async def restore_monitor_after_failed_session_close(
             return None
         if admission_check is not None and not admission_check():
             return None
+        was_active = loop.active
         staged = deepcopy(loop)
         staged_state = staged.monitor
         assert staged_state is not None
@@ -713,6 +722,14 @@ async def restore_monitor_after_failed_session_close(
         if self._on_monitor_tick is not None:
             self._arm_from_deadline(loop)
     self._emit("updated", loop)
+    if not was_active:
+        # The close-owned retirement committed this record inactive, and the
+        # store counted that as a stop; putting it back into service is the
+        # matching inactive-to-active transition, so it counts as a start and
+        # a later stop of the restored record stays paired. After the persist
+        # above, which raises on failure, so a restore that did not commit
+        # counts nothing.
+        monitor_loop_metrics.record_loop_started(loop)
     return loop
 
 

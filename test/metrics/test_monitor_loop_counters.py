@@ -219,6 +219,103 @@ class TestLoopsStarted:
         assert "done with it" not in "".join(stopped[0]["attrs"].values())
 
     @pytest.mark.asyncio
+    async def test_a_pause_resume_and_cap_stop_balance(self, rec, tmp_path):
+        """A resume is an inactive-to-active transition and counts as a start.
+
+        Without it, the pause and the later cycle-cap stop record two stops
+        against one start, and the reconcilers that revive inactive loops on
+        every pass widen that gap for as long as a campaign runs.
+        """
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600, max_cycles=1)
+        await svc.update(loop.id, active=False)
+        await svc.update(loop.id, active=True)
+        assert loop.active, "the resume must have revived the loop"
+        loop.cycle_count = 1
+        svc._on_fire = _unreachable_fire
+        await svc._timer(loop, delay=0)
+        assert not loop.active
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == 2
+        assert len(stopped) == 2
+        assert [c["attrs"]["reason"] for c in stopped] == ["manual", "cycle_cap"]
+        assert {c["attrs"]["kind"] for c in started + stopped} == {ml.KIND_LOOP}
+
+    @pytest.mark.asyncio
+    async def test_an_update_on_an_active_loop_is_not_a_start(self, rec, tmp_path):
+        """A settings save sends ``active=True`` on a live loop; nothing revived."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+
+        await svc.update(loop.id, active=True, message="go on")
+
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 1
+        assert _named(rec, ml.LOOPS_STOPPED) == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_close_restore_and_its_later_stop_balance(self, rec, tmp_path):
+        """The close retirement commits a stop, so its undo is a start."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        await svc.retire_monitor_for_session_close(loop.id, now=110.0)
+        assert not loop.active
+        restored = await svc.restore_monitor_after_failed_session_close(loop.id, now=120.0)
+        assert restored is loop and loop.active
+        await svc.stop_monitor(loop.id, now=130.0)
+
+        started = _named(rec, ml.LOOPS_STARTED)
+        stopped = _named(rec, ml.LOOPS_STOPPED)
+        assert len(started) == 2
+        assert len(stopped) == 2
+        assert [c["attrs"]["reason"] for c in stopped] == ["session_close", "user_stop"]
+        assert {c["attrs"]["kind"] for c in started + stopped} == {ml.KIND_MONITOR}
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_rollback_of_an_active_row_balances(self, rec, tmp_path):
+        """The replacement commit removes the prior id, which counts a stop."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        prior = await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        assert prior.monitor is not None
+        await svc.add_monitor(
+            slot_key="chat-1-123",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+            expected_existing_monitor_id=prior.id,
+            expected_existing_config_generation=prior.monitor.config_generation,
+            loop_id="replaced",
+            defer_replaced_trust_revocation=True,
+        )
+        assert await svc.rollback_monitor_replacement("replaced") is True
+        assert svc._loops[prior.id].active
+        await svc.stop_monitor(prior.id, now=130.0)
+
+        assert len(_named(rec, ml.LOOPS_STARTED)) == 3
+        assert len(_named(rec, ml.LOOPS_STOPPED)) == 3
+
+    @pytest.mark.asyncio
     async def test_no_loop_id_or_slot_key_reaches_the_attributes(self, rec, tmp_path):
         svc = AutoNudgeService(base_dir=tmp_path)
         await svc.start()
@@ -723,6 +820,39 @@ class TestTelemetryDisabled:
             loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
 
         assert loop.id in svc._loops
+
+    @pytest.mark.asyncio
+    async def test_a_raising_recorder_never_breaks_a_tick(self, tmp_path):
+        delivered: list[str] = []
+
+        async def _fire(watched, *args, **kwargs):
+            delivered.append(watched.id)
+            return True
+
+        with patch("kiro_crew.metrics.events.emit_counter", side_effect=RuntimeError("boom")):
+            svc = AutoNudgeService(base_dir=tmp_path)
+            await svc.start()
+            loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+            svc._on_fire = _fire
+            await svc._timer(loop, delay=0)
+
+        assert delivered == [loop.id], "the turn must still have been delivered"
+        assert loop.cycle_count == 1
+        assert loop.active
+
+    @pytest.mark.asyncio
+    async def test_a_raising_recorder_never_breaks_a_stop(self, tmp_path):
+        """The stop is counted after the commit; a failed count must not undo it."""
+        with patch("kiro_crew.metrics.events.emit_counter", side_effect=RuntimeError("boom")):
+            svc = AutoNudgeService(base_dir=tmp_path)
+            await svc.start()
+            loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=3600)
+            await svc.update(loop.id, active=False, stopped_reason="cycle_cap")
+
+        assert not loop.active
+        reloaded = AutoNudgeService(base_dir=tmp_path)
+        await reloaded.start()
+        assert not reloaded._loops[loop.id].active, "the stop must have committed"
 
 
 # ---------------------------------------------------------------------------
