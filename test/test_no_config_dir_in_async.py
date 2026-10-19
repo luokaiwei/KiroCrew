@@ -147,6 +147,12 @@ _ASYNC_CHECKED_FILES = [
     "slack/gateway_runtime/update_apply.py",
     "slack/gateway_runtime/update_schedule.py",
     "slack/interactions.py",
+    "slack/interactions_approvals.py",
+    "slack/interactions_context.py",
+    "slack/interactions_modals.py",
+    "slack/interactions_options.py",
+    "slack/interactions_sessions.py",
+    "slack/interactions_settings.py",
     "weixin/gateway.py",
     "cli_chat.py",
 ]

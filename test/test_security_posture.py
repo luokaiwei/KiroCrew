@@ -292,7 +292,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "mcp_tools/messaging.py": 1,
     "mcp_tools/skills.py": 2,
     "messaging/sessions_view.py": 1,
-    "slack/events.py": 2,
+    # The sessions slash command and the Home tab, moved out of slack/events.py to the
+    # owners behind that facade: the same gateway process.
+    "slack/events_home_tab.py": 1,
+    "slack/events_slash.py": 1,
     # Owners composed into slack/gateway.py (the cron script arm, boot-time install
     # repair, the unattended result delivery, a sub-agent completion's injection
     # into its parent, the tool-approval callbacks): the gateway process.

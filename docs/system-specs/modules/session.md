@@ -3321,7 +3321,7 @@ process-local and monotonic for the slot lifetime; unlike `task`, normal turn te
 does not clear it, so code spanning an await can detect a turn that started and finished
 inside that interval.
 
-**Slash commands** (`slack/events.py`):
+**Slash commands** (`slack/events_slash.py`):
 - `/kirocrew sessions [all|ended]` — lists the last `slack.sessions_limit` recent
   sessions as task cards, each with a Resume button (`mc_session_resume_{key}`)
 

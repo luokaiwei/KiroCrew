@@ -457,6 +457,12 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.hooks", "_global_script_hook_store"): "replaced per boot",
     ("kiro_crew.skill_usage", "_global_skill_read_observer"): "replaced per boot",
     ("kiro_crew.slack.interactions", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_approvals", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_context", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_modals", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_options", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_sessions", "_orch"): "replaced per boot",
+    ("kiro_crew.slack.interactions_settings", "_orch"): "replaced per boot",
     ("kiro_crew.taskq.dependency", "_current"): "cleared by _shutdown()",
     # The operator-declared model windows (``agent.model_context_tokens``): each boot's
     # config apply rebinds the global to a fresh dict built from that boot's own config,

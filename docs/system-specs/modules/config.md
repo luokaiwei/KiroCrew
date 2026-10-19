@@ -1482,7 +1482,7 @@ keys`. Three exclusions from that warning are named in code:
   is the point at which this becomes an app-declared registration.
 - `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
   writes and reads but does not model as a field. The settings UI persists it
-  (`slack/interactions.py`, `dashboard/chat_voice.py`) and the gateway reads it
+  (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
   section, and NOT reported as unrecognized because the product wrote it itself.
