@@ -9,6 +9,18 @@ disconnect, the automated L0/L1 gates, and the manual L2 gate. The subsystem is
 `control_plane/`), plus `dashboard/handlers/connections.py` and
 `website/src/pages/connections/`.
 
+The dashboard half is one page and the owners beside it.
+`website/src/pages/connections/ConnectionsPage.tsx` is the import path and runs
+the page: its queries and polls, the premint, the mint reconciliation, the
+Connect, Cancel, Disconnect, Test and relay actions, and the tabs.
+`website/src/pages/connections/ConnectionsPageCard.tsx` renders one provider card
+and its warning triangle (`PrerequisiteTip`), and
+`website/src/pages/connections/connectionsPageCardState.ts` decides what a card
+shows (`connectionStateFor` and the OAuth, mint and grant folds it reads). New
+card markup goes in the card file, a new rule for a card's state in the state
+module, and new page state or actions in the page; the page re-exports what
+callers import, and neither owner imports it.
+
 The `control_plane/` and `vendors/` subtrees are connector-campaign slices rather
 than this subsystem's OAuth-grant plumbing. Their current contracts include the
 [capability-manifest](connector-capability-manifest.md),

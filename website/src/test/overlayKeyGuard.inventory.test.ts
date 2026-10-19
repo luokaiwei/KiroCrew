@@ -45,7 +45,7 @@ const EXEMPT: Record<string, string> = {
   'components/PasteHoverLayer.tsx': 'Escape only closes its hover preview; it does not prevent or stop the key',
   'guide/GuideLayer.tsx': 'the listener only records that the last input was a key, for focus handling',
   'pages/chat/McpInfoButton.tsx': 'Escape only closes its own hover card; it does not prevent or stop the key',
-  'pages/connections/ConnectionsPage.tsx': 'Escape only unpins its own tip; it does not prevent or stop the key',
+  'pages/connections/ConnectionsPageCard.tsx': 'Escape only unpins its own tip; it does not prevent or stop the key',
 }
 
 const layerKeyListeners = () => {
