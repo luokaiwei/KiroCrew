@@ -445,6 +445,24 @@ def knowledge_dedup(name: str, args: dict[str, Any]) -> str:
     return output
 
 
+# Active items per source. The two membership legs (ownership, and location
+# for a dedup survivor) are UNIONed into (source, item) pairs and joined to
+# ``sources`` once, so an item held both ways counts once and the cost is
+# linear. An ``OR i.id IN (SELECT ... WHERE sl.source_id = s.id)`` inside the
+# JOIN would be correlated: SQLite re-runs it per (source, item) pair, which
+# never returns on a 76k-item library and wedges the shared MCP backend.
+_SOURCE_COUNTS_SQL = (
+    "SELECT s.id, s.name, COUNT(m.item_id) AS item_count "
+    "FROM sources s LEFT JOIN ("
+    "  SELECT source_id AS sid, id AS item_id FROM items"
+    "   WHERE status = 'active' AND source_id IS NOT NULL"
+    "  UNION"
+    "  SELECT sl.source_id AS sid, sl.item_id FROM source_locations sl"
+    "   JOIN items i ON i.id = sl.item_id AND i.status = 'active'"
+    ") m ON m.sid = s.id GROUP BY s.id, s.name ORDER BY s.name"
+)
+
+
 def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
     validate_tool_args(args, KNOWLEDGE_LIST_SOURCES_SCHEMA)
     db_path = Path(mcp_core.config_dir()) / "workspace" / "knowledge" / "knowledge.db"
@@ -467,13 +485,7 @@ def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
         # how much a source_id scope is likely to surface. Membership matches the
         # retriever's scoped seed queries: ownership (items.source_id) OR location
         # (source_locations, for items surviving a cross-source dedup collapse).
-        rows = store.db.execute(
-            "SELECT s.id, s.name, COUNT(DISTINCT i.id) AS item_count "
-            "FROM sources s LEFT JOIN items i ON i.status = 'active' AND ("
-            "  i.source_id = s.id"
-            "  OR i.id IN (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = s.id)"
-            ") GROUP BY s.id, s.name ORDER BY s.name"
-        ).fetchall()
+        rows = store.db.execute(_SOURCE_COUNTS_SQL).fetchall()
         stats = store.aggregate_stats()
     except knowledge_store.sqlite3.OperationalError as exc:
         if "no such" not in str(exc):
