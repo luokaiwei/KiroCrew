@@ -567,6 +567,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Session search's Chinese dictionary words for mcp-core (the gateway
+        # holds the host's one copy). MCP-only, no browser caller. The handler
+        # re-asserts loopback AND ``internal_auth`` itself, because a missing
+        # header falls through to cookie auth and a ``local_only=False``
+        # deployment reclassifies strict paths as mixed.
+        "/api/search/segment",
         # Blocking MCP ask_question: open / wait / withdraw. STRICT for the same
         # reason as the keepalive above -- the only caller is the tool in an MCP
         # subprocess, and the card is addressed by the attested X-Session-Key,

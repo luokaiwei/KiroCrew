@@ -254,6 +254,15 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     except Exception:
         logger.debug("service config watchers not fully registered", exc_info=True)
 
+    # Session search splits Chinese runs into dictionary words in THIS process,
+    # which holds the host's one copy of the dictionary; mcp-core processes ask
+    # it over /api/search/segment. In-memory wiring only: the dictionary itself
+    # loads on the first Chinese query.
+    from kiro_crew.history_search import register_cjk_segmenter
+    from kiro_crew.history_words import segment_runs
+
+    register_cjk_segmenter(segment_runs)
+
     # Memory, skills, hooks, lessons
     memory = MemoryStore()
 
