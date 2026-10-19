@@ -22,8 +22,13 @@ superseded-by: []
   (the counting-fold export model and its first metrics, PRs
   [#21342](https://github.com/kirodotdev/KiroCrew/pull/21342) and
   [#21308](https://github.com/kirodotdev/KiroCrew/pull/21308)).
-- Related: [rfc-telemetry-export-kiro-endpoint.md](https://github.com/kirodotdev/KiroCrew/blob/docs/21270-telemetry-export-endpoint-rfc/docs/request-for-change/rfc-telemetry-export-kiro-endpoint.md)
-  (where these numbers are sent, and which of them leave the machine).
+- Governing RFC for consent and egress: #21288, sections 8 and 9.
+  `telemetry.enabled` stays off by default, and nothing leaves the machine
+  unless the operator points `otlp_endpoint` at a collector. This RFC adds no
+  outbound path and changes neither rule.
+- Not a dependency: [#22181](https://github.com/kirodotdev/KiroCrew/pull/22181)
+  is a separate draft proposal, under review, about sending product metrics to
+  a Kiro endpoint. Nothing here assumes it is accepted.
 
 ## 1. Summary
 
@@ -48,7 +53,7 @@ answer the questions we are asked most:
 |---|---|
 | How many turns run inside conductor sessions vs worker sessions? | Not answerable: `crew.turn.started` is split by who started the turn, not by the kind of session |
 | How many children does a parent session open? | Not answerable |
-| How deep do trees get? | A histogram whose buckets may not survive the backend |
+| How deep do trees get? | Answered by `kirocrew.crew.session.tree.depth`, already a counter with a closed `depth` bucket in #21308 (#21288 section 5); no histogram is involved |
 | How often do agents use session control, and which operations? | Not answerable: `tool.call.duration` groups by tool kind, and session control calls fall into `other` |
 | Do monitor loops do useful work, or tick quietly? | Not answerable: only the live loop count exists |
 | How do work ledger items end, and how long do they take? | Not answerable: no ledger metric exists |
@@ -67,11 +72,11 @@ Goals:
 
 Non-goals:
 
-- Where the numbers are sent and which ones leave the machine. That is
-  [rfc-telemetry-export-kiro-endpoint.md](https://github.com/kirodotdev/KiroCrew/blob/docs/21270-telemetry-export-endpoint-rfc/docs/request-for-change/rfc-telemetry-export-kiro-endpoint.md).
-- Counting machines. No metric here carries a machine or install id.
-- Per-person counts. People are counted by the endpoint from the Kiro sign-in
-  (see the export RFC), never by a metric attribute.
+- Egress: where the numbers are sent and which ones leave the machine. This
+  RFC adds no outbound path. Egress stays governed by #21288 sections 8 and 9:
+  opt-in through `telemetry.enabled`, and no default endpoint.
+- Counting machines or people. No metric here carries a machine, install,
+  account or person id.
 - "Stale" work (a worker that has not reported for hours). Deferred to a later
   round.
 - Exact latencies per event. Those need spans and are out of scope here.
@@ -92,6 +97,17 @@ Non-goals:
    the single commit point of the feature, after the write succeeds.
 7. Everything stays behind `telemetry.enabled` and the existing attribute
    sanitiser.
+8. Failure isolation. Many wave-2 sources are commit points in request handlers
+   and service code (the session control handlers, `WebhookRunStore.record`,
+   the work ledger record handler, autonudge firing and its stop commit), not
+   bus subscribers, so the bus's own subscriber-error isolation does not cover
+   them. Every record call at a commit point is wrapped so that any exception
+   it raises is caught and dropped, with at most a debug log on that failure
+   path. A failure while recording never changes the outcome of the call it
+   measures: the same return value, HTTP status, raised error and written
+   state as with telemetry off. Recording runs after the write commits, so it
+   cannot undo or block that write. Each area's tests pin this by making the
+   recorder raise and asserting the measured call's result is unchanged.
 
 ## 5. Changes to the first-round metrics
 
@@ -99,8 +115,8 @@ These land in the open PRs #21342 and #21308.
 
 | Metric | Change | Why |
 |---|---|---|
-| `kirocrew.crew.turn.started` | Attributes become `{actor, agent_kind}` | Count turns inside conductor, worker, team-lead and crewmate sessions. About 8 x 6 = 48 series at most |
-| `kirocrew.crew.session.tree.depth` | Histogram -> counter, attribute `depth`: `0` / `1` / `2` / `3+` | Keep the depth distribution on any backend |
+| `kirocrew.crew.turn.started` | Attributes become `{actor, agent_kind}` | Count turns inside conductor, worker, team-lead and crewmate sessions. At most 8 x 16 = 128 series, and 10 x 16 = 160 after the `actor` change in 6.4 |
+| `kirocrew.crew.session.tree.depth` | No change: already a counter with attribute `depth`: `0` / `1` / `2` / `3+`, as in #21288 section 5 and #21308 | Keep the depth distribution on any backend |
 | `kirocrew.crew.session.tree.child` | New counter, attributes `parent_kind` (agent_kind enum) and `nth`: `1` / `2` / `3` / `4-7` / `8+` | Tree width, see below |
 
 Tree width: each child session adds one to `tree.child` with `nth` set to its
@@ -129,8 +145,9 @@ use the dashboard instead, so every caller is an agent.
 |---|---|---|---|
 | `kirocrew.crew.session_control.calls` | counter | `op`: the closed tool list (`create`, `send`, `fork`, `stop`, `close`, `continue`, `broadcast`, `status`, `read_message`, `summary`, `retry`, `reload`, `rename`, `set_model`, `end_wait`, `adopt`, `release`, `generate_title`); `caller`: agent_kind enum; `outcome`: `ok` / `error` | Counting fold over the caller's tool-call entries, or the `/api/session-control/*` handlers after the call completes |
 
-At most 18 x 6 x 2 = 216 series. A backend that should not carry all of them can
-drop `outcome` from its dimensions.
+At most 18 x 16 x 2 = 576 series (`caller` is the 16-value agent_kind enum in
+6.6). A backend that should not carry all of them can drop `outcome` from its
+dimensions, which leaves 288.
 
 ### 6.2 Monitor loops (autonudge)
 
@@ -140,8 +157,8 @@ Today only `kirocrew.inventory.monitor_loops.active` exists.
 |---|---|---|---|
 | `kirocrew.autonudge.loops.started` | counter | `kind`: `loop` / `monitor` | The loop-creation mutation in `autonudge_service/` (no crew log entry exists for it) |
 | `kirocrew.autonudge.ticks` | counter | `kind`; `outcome`: `delivered` / `quiet` / `refused` / `failed` | `autonudge_service/firing.py`, one point per tick decision |
-| `kirocrew.autonudge.loops.stopped` | counter | `kind`; `reason`: the fixed stop reasons plus `cycle_cap` / `runtime_cap` / `other`; `ran`: `lt_1h` / `1h_24h` / `gt_24h` | The single commit point in `autonudge_stop_log.py` |
-| `kirocrew.monitor.decisions` | counter | `decision`: `no_change` / `record_only` / `wake_actionable` / `stop_success` / `stop_blocked` / `retry_provider` / `stop_budget`; `kind`: the closed monitor kinds | `monitoring/decision.py::decide_monitor` |
+| `kirocrew.autonudge.loops.stopped` | counter | `kind`; `reason`: 28 closed stop reasons plus `other`, mapped from the stored text as listed in 6.6; `ran`: `lt_1h` / `1h_24h` / `gt_24h` / `other` | The single commit point in `autonudge_stop_log.py` |
+| `kirocrew.monitor.decisions` | counter | `decision`: `no_change` / `record_only` / `wake_actionable` / `stop_success` / `stop_blocked` / `retry_provider` / `stop_budget` / `other`; `kind`: the registered monitor kinds plus `other`, listed in 6.6 | `monitoring/decision.py::decide_monitor` |
 
 The ratio of `quiet` to `delivered` ticks is the first number to read: it tells
 whether loops idle or work.
@@ -158,8 +175,19 @@ There is no ledger metric today. Every change is already a `work/recorded`,
 | `kirocrew.work.dispatches` | counter | `target_kind`: `session` / `crew` | After the `crew/dispatch` write |
 | `kirocrew.work.reports` | counter | `status`: `progress` / `done` / `blocked` / `question` / `failed`; `reason`: `approval` / `needs_human` / `none` | After the `crew/report` write |
 
-These count at the commit point rather than in a fold because the `work` fold
-keeps only the last 32 closed items; older items survive only as a total.
+Why the commit point and not a counting fold, which rule 6 prefers. The
+existing `work` fold's limit on closed items is not the reason: a new counting
+fold would keep no item records, so that limit would not apply to it. The
+reason is the labels. `depth` on `work.created`, and `fails` and `duration` on
+`work.item_closed`, need facts about one item (its parent, its failure count,
+its creation time). A numbers-only fold could only supply them by holding a
+record per item id until the item closes, which rule 6 and #21288 section 4.4
+forbid. The record handler has the item record in hand when its write commits,
+so it reads those facts there and keeps nothing. `dispatches` and `reports`
+need no per-item fact and could come from a counting fold; they stay at the
+same handler so all four ledger counters share one source and one restart
+behaviour (a commit-point counter never re-counts on restart, so it needs no
+restart baseline).
 
 ### 6.4 Event sources
 
@@ -204,6 +232,77 @@ event with no subscriber is dropped by design), so there is no backlog to
 measure, only subscriber errors. Per-session file size is not a metric because
 session ids are unbounded.
 
+### 6.6 Closed value lists
+
+Every enum this RFC uses that is not spelled out in its own table is listed
+here, with how raw text becomes a closed value. The code builds each set from
+the constants that produce its values (#22217, #22226, #21342), and a test pins
+each list.
+
+**agent_kind** (`caller` in 6.1, `agent_kind` and `parent_kind` in 5), 16
+values from #21342: the 13 agent-file stems `conductor`, `dashboard_author`,
+`dashboard_manager`, `guest`, `heartbeat`, `knowledge`, `ledger_conductor`,
+`lite`, `pipeline_conductor`, `research`, `security_conductor`, `team_lead`,
+`worker`, plus `default`, `crewmate` and `other`. An operator-written agent name
+is mapped to this set when the session opens and is never kept.
+
+**actor** on `crew.turn.started`, 8 values today: `app`, `autonudge`, `crew`,
+`cron`, `gateway`, `subagent`, `user`, `other`. Section 6.4 adds `webhook` and
+`heartbeat`, for 10.
+
+**reason** on `autonudge.loops.stopped`. On main the stored reason is free
+text: the stop record clips it to 200 characters (`autonudge_stop_log.py`
+`safe_text`), and a structured monitor's stop reason may be up to 500 characters
+(`monitoring/models.py`, `MAX_MONITOR_STOP_REASON_CHARS`). The counter never
+reports that text. It strips surrounding whitespace and looks the string up in
+a fixed table. An exact match reports the table's value. Anything else,
+including composed reasons such as `campaign_<status>` and any free text,
+reports `other`.
+
+| Stored reason | Reported as |
+|---|---|
+| `cycle_cap`, `stop_sentinel`, `monitor_terminal`, `autonudge_stop`, `session_start_failures`, `consecutive_failures`, `structural_terminal`, `model_refused`, `sentinel_dropped`, `manual` (legacy loop reasons, `autonudge_service/model.py`) | itself |
+| `agent_turn_budget`, `token_budget`, `provider_error_budget`, `verdict_stall`, `invalid_monitor_record`, `unsupported_monitor_version`, `completion_evidence_unavailable`, `session_unavailable`, `user_stop`, `session_close` (structured monitor stop reasons, `monitoring/models.py`) | itself |
+| `success`, `blocked`, `budget`, `target_unavailable` (the terminal `MonitorOutcome` values a monitor row falls back to; `user_stop` and `session_close` are listed above) | itself |
+| `removed`, `unspecified` (defaults `autonudge_stop_log.py` supplies for a row that vanished or stopped with no reason) | itself |
+| `runtime_budget` (both the legacy and the monitor spelling) | `runtime_cap` |
+| `approval_stalled` (legacy), `approval_stall` (monitor) | `approval_stall` |
+| anything else | `other` |
+
+That is 28 reported values plus `other`, 29 in all.
+
+**kind** on `monitor.decisions`: the kinds registered in
+`monitoring/registry.py`, which are `gh-pr`, `github_pull_request`,
+`github_workflow_run`, `gitlab_merge_request`, `bitbucket_pull_request` and
+`azure_devops_pull_request`. A kind with no registry entry (for example a store
+row written by a newer version) reports `other`, so 7 values. `decision` is the
+7 members of `MonitorDecision` plus `other`.
+
+**kind** on the three `autonudge.*` counters: `loop`, `monitor`, plus `other`
+for a stop record whose kind is missing.
+
+**fold** on `crew_log.fold.apply`: the 16 names of `FOLD_NAMES` in
+`crew_log/projection_catalogue.py`, which are `status`, `usage`, `timeline`,
+`tools`, `approvals`, `subagents`, `class`, `outline`, `ledger`, `radar`,
+`work`, `panel`, `agentic`, `mistakes`, `workstreams` and `worktree`. The label
+is read from that catalogue at import, so there is no second copy to drift; a
+name outside it reports `other`, which only a caller bug can reach. `scope` is
+`slot` / `session` plus `other`.
+
+### 6.7 Series bounds
+
+The upper bound for each attributed counter is the product of its value counts,
+`other` included.
+
+| Metric | Bound |
+|---|---|
+| `crew.turn.started` | 8 x 16 = 128; 10 x 16 = 160 after the `actor` change |
+| `crew.session.tree.child` | 16 x 5 = 80 |
+| `crew.session_control.calls` | 18 x 16 x 2 = 576 (288 without `outcome`) |
+| `autonudge.loops.stopped` | 3 x 29 x 4 = 348 |
+| `monitor.decisions` | 8 x 7 = 56 |
+| `crew_log.fold.apply` | 3 x 17 x 4 = 204. Each fold has one scope, so a correct install reaches at most 16 x 4 = 64 |
+
 ## 7. Phases
 
 1. Section 5 changes, in #21342 and #21308.
@@ -215,10 +314,17 @@ session ids are unbounded.
 
 Each phase is one PR per area with tests that pin the attribute value lists.
 
+Two things wave 2 takes from #21288. First, it relies on question 1 of #21288
+section 11 (approval for a data category or for a named list of metrics). Wave 2
+reads the answer as a category; if the answer is a named list, each phase above
+returns for review, and section 6.6 is the list it brings. Second, section 6.3
+pulls #21288's S4 phase (work ledger: nesting, item states and how long items
+take) into this round and scopes it here.
+
 ## 8. Backward compatibility
 
-- `crew.session.tree.depth` changes type before it ships, so no consumer has
-  seen the histogram.
+- `crew.session.tree.depth` keeps the counter type #21288 and #21308 already
+  give it; nothing here changes its type.
 - Adding `agent_kind` to `crew.turn.started` adds series; it removes none.
 - Adding `webhook` and `heartbeat` to the `actor` enum moves some turns out of
   `other`. Dashboards that read `other` will see it shrink.
@@ -229,8 +335,11 @@ Each phase is one PR per area with tests that pin the attribute value lists.
   listed in this document and pinned by a test.
 - Monitor stop reasons and webhook outcomes contain free text in local logs;
   only the mapped closed value is used, never the text.
-- All metrics stay behind `telemetry.enabled`. Which ones leave the machine is
-  decided in the export RFC, not here.
+- All metrics stay behind `telemetry.enabled`, which stays off by default. This
+  RFC adds no outbound path: the numbers reach only the OTLP collector an
+  operator configures, under #21288 sections 8 and 9, and none by default.
+- A failure while recording never changes the outcome of the measured call
+  (section 4, rule 8).
 
 ## 10. Alternatives considered
 
