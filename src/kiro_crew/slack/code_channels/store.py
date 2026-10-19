@@ -176,6 +176,11 @@ class CodeChannelStore:
         #: write-protected file, so a worker cannot erase its own lineage the way it
         #: could edit its transcript's ``created_by``. Never evicted.
         self._workers: dict[str, str] = {}
+        #: Restart-resume bookkeeping (:mod:`.resume`), keyed by slot key or by
+        #: ``notice:<channel>``: the interrupted turn an auto-resume was tried for,
+        #: so a turn that takes the gateway down is resumed at most once. In this
+        #: write-protected file so a session cannot clear its own loop guard.
+        self._resume: dict[str, dict[str, str]] = {}
         #: The file existed and could not be read or parsed, so the tables started
         #: empty. Sticky for the process: every reader that must not mistake
         #: "unreadable" for "empty" (:meth:`session_keys`) refuses on it.
@@ -201,7 +206,7 @@ class CodeChannelStore:
             return
         try:
             data = self._read_document()
-            routes, bindings, retired, workers = self._parse(data)
+            routes, bindings, retired, workers, resume = self._parse(data)
         except Exception as exc:
             # Any failure to read the file whole -- unreadable, unparsable, an
             # existing path that is not a readable file (a dangling symlink, a
@@ -210,11 +215,12 @@ class CodeChannelStore:
             # session is a code-channel worker. Sticky for the process, and
             # :meth:`_commit` refuses to write over it.
             logger.warning("code channel store unreadable, starting empty: %s", exc)
-            routes, bindings, retired, workers = {}, {}, (), {}
+            routes, bindings, retired, workers, resume = {}, {}, (), {}, {}
             self._load_failed = True
         self._routes, self._bindings = _bounded_routes(routes, time.time()), bindings
         self._retired = retired
         self._workers = workers
+        self._resume = resume
         self._loaded = True
 
     def _read_document(self) -> Any:
@@ -228,9 +234,13 @@ class CodeChannelStore:
             os.stat(path)  # FileNotFoundError here: a dangling link, not absence
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def _parse(
-        self, data: Any
-    ) -> tuple[dict[str, Route], dict[str, Binding], tuple[str, ...], dict[str, str]]:
+    def _parse(self, data: Any) -> tuple[
+        dict[str, Route],
+        dict[str, Binding],
+        tuple[str, ...],
+        dict[str, str],
+        dict[str, dict[str, str]],
+    ]:
         """The tables in *data*. Raises :class:`ValueError` on any malformed part."""
         if not isinstance(data, dict):
             raise ValueError("the store is not a JSON object")
@@ -268,7 +278,20 @@ class CodeChannelStore:
             )
         ):
             raise ValueError("workers is malformed")
-        return routes, bindings, tuple(raw_retired), dict(raw_workers)
+        raw_resume = data.get("resume", {})
+        if not (
+            isinstance(raw_resume, dict)
+            and all(
+                isinstance(k, str)
+                and k
+                and isinstance(v, dict)
+                and all(isinstance(f, str) and isinstance(x, str) for f, x in v.items())
+                for k, v in raw_resume.items()
+            )
+        ):
+            raise ValueError("resume is malformed")
+        resume = {k: dict(v) for k, v in raw_resume.items()}
+        return routes, bindings, tuple(raw_retired), dict(raw_workers), resume
 
     def _read(self) -> None:
         """Make sure a snapshot exists before a lock-free read."""
@@ -281,6 +304,7 @@ class CodeChannelStore:
         routes: dict[str, Route] | None = None,
         bindings: dict[str, Binding] | None = None,
         workers: dict[str, str] | None = None,
+        resume: dict[str, dict[str, str]] | None = None,
     ) -> None:
         """Write the new tables, then publish them. Callers hold the lock.
 
@@ -310,11 +334,13 @@ class CodeChannelStore:
         # human-scale event -- so it stays small.
         new_retired = tuple(retired)
         new_workers = self._workers if workers is None else workers
+        new_resume = self._resume if resume is None else resume
         payload = {
             "routes": {k: asdict(v) for k, v in new_routes.items()},
             "bindings": {k: asdict(v) for k, v in new_bindings.items()},
             "retired_session_keys": list(new_retired),
             "workers": dict(new_workers),
+            "resume": {k: dict(v) for k, v in new_resume.items()},
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -324,6 +350,7 @@ class CodeChannelStore:
             raise StoreWriteError(str(exc)) from exc
         self._routes, self._bindings = new_routes, new_bindings
         self._retired, self._workers = new_retired, new_workers
+        self._resume = new_resume
 
     # ── Routes ───────────────────────────────────────────────────────────
 
@@ -440,6 +467,50 @@ class CodeChannelStore:
             if self._workers.get(worker_key) == conductor_key:
                 return
             self._commit(workers={**self._workers, worker_key: conductor_key})
+
+    def workers_of(self, conductor_key: str) -> list[str]:
+        """Every worker key the store records as created by *conductor_key*."""
+        self._read()
+        return [w for w, c in self._workers.items() if c == conductor_key and conductor_key]
+
+    # ── Restart resume ───────────────────────────────────────────────────
+
+    def resume_record(self, key: str) -> dict[str, str] | None:
+        """The restart-resume record for *key* (a slot key or ``notice:<channel>``)."""
+        self._read()
+        record = self._resume.get(key)
+        return dict(record) if record is not None else None
+
+    def record_resume(self, key: str, record: dict[str, str]) -> None:
+        """Persist *record* for *key* before it is acted on (:class:`StoreWriteError`).
+
+        Refused on a store that failed to load, like every other write here.
+        """
+        if not key or not all(isinstance(v, str) for v in record.values()):
+            raise ValueError("a resume record is a non-empty key and string fields")
+        with self._lock:
+            self._ensure_loaded()
+            if self._load_failed:
+                raise StoreUnavailable("the code-channel store could not be read")
+            if self._resume.get(key) == record:
+                return
+            self._commit(resume={**self._resume, key: dict(record)})
+
+    def replace_resume_if(self, key: str, expected: dict[str, str], record: dict[str, str]) -> bool:
+        """Write *record* for *key* only if the stored one still equals *expected*.
+
+        The compare and the write happen under the store lock, so exactly one of
+        two concurrent callers holding the same *expected* wins (a Resume press
+        delivered twice). Returns whether this caller won.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            if self._load_failed:
+                raise StoreUnavailable("the code-channel store could not be read")
+            if self._resume.get(key) != expected:
+                return False
+            self._commit(resume={**self._resume, key: dict(record)})
+            return True
 
     def put_binding(self, binding: Binding) -> Binding:
         """Store *binding* unless the channel is already bound; returns the stored one."""

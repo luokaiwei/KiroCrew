@@ -407,6 +407,11 @@ waiting on an approval, closed or lost) and how long since it last did anything,
 to the worker's chat in the dashboard. It never reads a worker's transcript into the channel,
 and the link carries no sign-in: opening it still asks you to sign in to the dashboard.
 
+If the gateway restarts while a code channel is working, it picks the work up by itself once
+Slack reconnects -- the channel's own conversation and the workers it started -- and says so in
+the channel. It does that only once per interrupted piece of work: if that work is cut off
+again, the channel instead gets a **Resume** button that only you can press.
+
 ---
 
 ## Reusing the App in Another Workspace

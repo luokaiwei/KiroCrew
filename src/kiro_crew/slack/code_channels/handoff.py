@@ -57,8 +57,8 @@ CONFIRM_TEXT = (
     "Slack → Code channels."
 )
 DONE_TEXT = "Hand-off is on. Ask again or say retry."
-NOT_OWNER_TEXT = "⛔ Only the owner can turn on hand-off."
-NOT_ALLOWED_TEXT = "⛔ You can't change hand-off from this channel."
+NOT_OWNER_TEXT = ":no_entry: Only the owner can turn on hand-off."
+NOT_ALLOWED_TEXT = ":no_entry: You can't change hand-off from this channel."
 FAILED_TEXT = "I couldn't turn on hand-off: {reason}"
 STALE_TEXT = (
     "That notice is out of date, so it can't change the setting. Ask the conductor "
@@ -300,9 +300,14 @@ async def handle_handoff_click(orch: Any, payload: dict[str, Any]) -> bool:
             await _ephemeral(channel, user, STALE_TEXT)
             return True
         _noticed[channel] = _USED
-        refusal = await save_code_channel_dispatch(
-            surface.dashboard_state(), value=True, caller=user, source="slack"
-        )
+        try:
+            refusal = await save_code_channel_dispatch(
+                surface.dashboard_state(), value=True, caller=user, source="slack"
+            )
+        except Exception:
+            # Not a decision: the button must not die with it.
+            logger.warning("code channel %s: hand-off save failed", channel, exc_info=True)
+            refusal = "the setting could not be saved"
         if refusal:
             _noticed[channel] = msg_ts  # nothing changed: the notice still stands
             surface.audit(user, OPERATION, "error", resources, refusal)

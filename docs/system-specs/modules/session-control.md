@@ -1874,6 +1874,18 @@ through the outbound credential/exfiltration filter and dropped whole if anythin
 credential-shaped remains. Transcript verbs (`read`, `summary`) stay refused; their refusal
 names `session_status` and, for its own worker only, that link (`transcript_read_hint`).
 
+**Restart resume** (`slack/code_channels/resume.py`). After the memory barrier, once Slack is
+connected, each bound, live, not archived and not wrapped-up code channel's interrupted work
+is continued through `continue_slot_turn(require_interrupted=True)` -- the channel's session
+and its own workers (store worker records plus the crew-log tree), nothing else. The
+interrupted turn (its opening row's ts) is recorded in the code-channel store's `resume` table
+before the continue; a recorded turn is never auto-resumed again. One top-level notice
+follows, after `status.settle_after_stop`; anything held back gets an owner-only Resume
+button (`kc_code_channel_resume_<hash>`) honoured only on the recorded notice ts and claimed by
+compare-and-set; it resumes what is interrupted in the channel now (identity and admission
+re-checked under the lock) and is given back when nothing could be resumed.
+`resume.subscribe` hands each channel's report to the work board.
+
 **Agents cannot wear the gateway's buttons.** Agent-supplied Block Kit on both the send and
 the edit path is refused (`blocks_reserved_action`) when an `action_id` or `block_id` starts
 with `kc_code_channel_`, so an agent cannot post, or edit onto a gateway message, a copy of

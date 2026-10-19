@@ -45,6 +45,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   /** `config.local.json` sets `slack.code_channel_dispatch`, so a save here cannot
    *  change it (the server refuses one with 409). */
   code_channel_dispatch_overlay?: boolean
+  /** `pinned`: the value shown is the one `config.local.json` sets; `unreadable`:
+   *  the file cannot be read, so what it sets is unknown; `absent`: not set there. */
+  code_channel_dispatch_overlay_state?: 'pinned' | 'unreadable' | 'absent'
   /** What a new code-channel session starts with (null = not set here). */
   code_channel_defaults?: SlackCodeChannelDefaults
   /** How a new code-channel session resolves right now, from the saved defaults. */

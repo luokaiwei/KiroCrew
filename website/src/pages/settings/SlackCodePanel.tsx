@@ -347,7 +347,11 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                   {data.code_channel_dispatch_overlay === true && (
                     <div className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mt-1" data-testid="slack-code-dispatch-overlay">
                       <Info size={12} className="text-muted flex-none mt-0.5" />
-                      <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay')}</span>
+                      <span className="text-[12px] text-muted">{data.code_channel_dispatch_overlay_state === 'unreadable'
+                        ? i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_unreadable')
+                        : data.code_channel_dispatch === true
+                        ? i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_on')
+                        : i18nT('pages.settings.slackPanel.slackCode.code_channel_dispatch_overlay_off')}</span>
                     </div>
                   )}
                   {!draft.dispatch && data.code_channel_dispatch_overlay !== true && (

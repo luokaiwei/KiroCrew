@@ -441,3 +441,34 @@ def test_a_superseded_attempt_neither_releases_nor_posts_for_the_newer_one(world
 
     asyncio.run(body())
     assert len(world.slack.posts) == 1
+
+
+def test_a_failed_config_write_keeps_the_button_for_a_retry(world, monkeypatch):
+    """Full disk / read-only storage: a refusal, the notice still stands."""
+    ts = _issue(world)
+    real = messaging._LockedSectionWrite.commit
+
+    async def _full(self: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(messaging._LockedSectionWrite, "commit", _full)
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert not _dispatch_on(world.cfg)
+    assert world.slack.ephemerals[-1][2] == handoff.FAILED_TEXT.format(
+        reason="config.json could not be written"
+    )
+    denied = [c for c in world.sel.calls if c.get("outcome") == "denied"]
+    assert denied and denied[-1]["error"] == "config.json could not be written"
+    monkeypatch.setattr(messaging._LockedSectionWrite, "commit", real)
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert _dispatch_on(world.cfg), "the storage recovered: the same button works"
+
+
+def test_an_unexpected_save_error_keeps_the_button(world, monkeypatch):
+    ts = _issue(world)
+    monkeypatch.setattr(
+        messaging, "save_code_channel_dispatch", AsyncMock(side_effect=RuntimeError())
+    )
+    asyncio.run(handoff.handle_handoff_click(None, _click(OWNER, ts=ts)))
+    assert world.slack.ephemerals[-1][2].startswith("I couldn't turn on hand-off:")
+    assert handoff._noticed[CHANNEL] == ts, "still the current notice"
