@@ -137,31 +137,6 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
 }
 
 
-#: Per-tool deny reaches whose cost falls on a WHOLE server rather than one tool.
-#:
-#: Two of the three, and the second one is the reason this is a set rather than a
-#: comparison against ``whole-server``. ``whole-server`` has no per-call identity to
-#: match, so withholding the server entire is the only faithful answer -- Crew's own
-#: control plane included. ``per-call`` stays per tool on Crew's OWN servers and
-#: withholds any other server whole, so a reader with a third-party server meets the
-#: same accident. ``settings-file`` is the one reach that costs exactly the tool it
-#: names, everywhere, which is why it is not here.
-#:
-#: Named here rather than in each renderer: a consumer that spelled the comparison
-#: itself would author "which reaches are dangerous" for its own surface, and a reach
-#: added to the vocabulary would render as ordinary on one surface and prominent on
-#: another. Held against the vocabulary by the same completeness test that holds
-#: :data:`OFF_CARD_CONCERNS`, so a new member is a failing test rather than a value
-#: quietly classified as harmless.
-COSTS_WHOLE_SERVER: Tuple[str, ...] = ("whole-server", "per-call")
-
-#: Reaches whose cost is the single tool the restriction names, and nothing more.
-#:
-#: The other half of the classification, spelled out for the completeness test: a
-#: reach in NEITHER tuple is one nobody ruled on, which is the state the test fails.
-COSTS_ONE_TOOL: Tuple[str, ...] = ("settings-file",)
-
-
 @dataclass(frozen=True)
 class McpAbility:
     """What one harness's declaration says about Crew's MCP servers reaching it."""
@@ -206,6 +181,15 @@ class McpAbility:
     #: :attr:`channel`.
     tracking: str = ""
 
+    #: Whether switching ONE tool off here can cost a whole server.
+    #:
+    #: Copied from the declared reach's own ruling
+    #: (``registry.PerToolDeny.costs_whole_server``), so every surface that gives
+    #: this fact a prominent slot gives it to the same reaches, and a reach added
+    #: to the vocabulary carries its cost with it. ``False`` for a harness that
+    #: declares no reach, which is the honest answer: nothing is established.
+    costs_whole_server: bool = False
+
     @property
     def costs_control_plane(self) -> bool:
         """Whether a tool-off here can withhold Crew's OWN servers.
@@ -227,17 +211,6 @@ class McpAbility:
         reachable on this harness rather than certain.
         """
         return self.per_tool_deny == "whole-server"
-
-    @property
-    def costs_whole_server(self) -> bool:
-        """Whether switching ONE tool off here can cost a whole server.
-
-        Derived from :attr:`per_tool_deny` against :data:`COSTS_WHOLE_SERVER`, so
-        every surface that gives this fact a prominent slot gives it to the same
-        reaches. ``False`` for a harness that declares no reach, which is the honest
-        answer: nothing is established about it.
-        """
-        return self.per_tool_deny in COSTS_WHOLE_SERVER
 
 
 def _declaration(backend: str) -> Any | None:
@@ -336,6 +309,7 @@ def ability_for(backend: str) -> McpAbility:
         no_channel=tuple(cid for cid in on_card if ruled.get(cid) == "no-channel"),
         channel=declared.channel,
         tracking=declared.tracking,
+        costs_whole_server=reach is not None and reach.costs_whole_server is True,
     )
 
 
