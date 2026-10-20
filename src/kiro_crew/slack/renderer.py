@@ -685,6 +685,20 @@ class SlackRenderer(Renderer):
         self._task_counter = 0
         self._active_task_id = ""
         self._active_task_title = ""
+        #: ACP tool_call_id of the task card ``_active_task_id`` is showing, so a
+        #: ``tool_result`` can be matched to the card it finalizes. "" when no
+        #: card is open or the transport sent no id.
+        self._active_tool_call_id = ""
+        #: Terminal outcomes seen for THIS turn's tool calls, keyed by ACP
+        #: ``tool_call_id`` -> a ``TERMINAL_TOOL_STATUSES`` value. A call's card
+        #: is finalized against this: "completed" is the ✓ card, anything else is
+        #: a failed card, so one failed call among many reads as that one call,
+        #: not a whole-step failure. Entries are consumed as their card closes.
+        self._tool_outcomes: dict[str, str] = {}
+        #: Per-turn accounting for the end-of-turn summary: how many tool calls
+        #: this turn finished, and how many of those did NOT succeed.
+        self._tools_finished = 0
+        self._tools_failed = 0
         self._tool_start_time = 0.0  # monotonic ts of current tool start
         self._tool_timer_task: asyncio.Task | None = None  # 30s elapsed updater
         self._controller: Any = None
@@ -1173,6 +1187,75 @@ class SlackRenderer(Renderer):
             logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
             return False
 
+    async def on_tool_result(self, tool_call_id: str, tool_status: str) -> None:
+        """Record a tool call's terminal outcome for its card and the tally.
+
+        The card is finalized later — when the next ``on_tool_call`` starts,
+        at a ``wait`` boundary, or at ``on_done`` — because that is when the
+        elapsed time is known and the "complete" stamp is already written
+        today. All this does is remember the outcome so that finalize can stamp
+        the honest status instead of a blanket "complete". A terminal status
+        other than "completed" is a call that did not succeed.
+        """
+        if tool_call_id:
+            self._tool_outcomes[tool_call_id] = tool_status
+
+    async def _finalize_active_task(self) -> None:
+        """Close the open task card against its recorded outcome, if any.
+
+        Replaces the three bare ``_append_task(..., "complete")`` calls that
+        marked EVERY tool card complete regardless of what the call did. A call
+        whose ``on_tool_result`` recorded a non-"completed" terminal status gets
+        an ``error`` card whose detail names the outcome; everything else (a
+        success, or a call whose transport sent no result event) keeps the ✓
+        card, so behaviour is unchanged wherever no failure was reported. Also
+        advances the per-turn tally the end-of-turn summary reads. Idempotent:
+        clears ``_active_task_id`` so a second call is a no-op.
+        """
+        if not self._active_task_id:
+            return
+        elapsed = self._tool_elapsed_str()
+        title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
+        outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
+        failed = bool(outcome) and outcome != "completed"
+        self._tools_finished += 1
+        if failed:
+            self._tools_failed += 1
+            # Slack's ``task_update`` status is one of error/pending/in_progress/
+            # complete — "error" is the non-✓ card. Naming the outcome in the
+            # detail is what tells the reader a render-time failure apart from a
+            # real tool failure.
+            await self._append_task(self._active_task_id, title, "error", details=outcome)
+        else:
+            await self._append_task(self._active_task_id, title, "complete")
+        self._active_task_id = ""
+        self._active_tool_call_id = ""
+
+    async def _post_tool_accounting_note(self) -> None:
+        """Post one ``N tool calls · M succeeded · K failed`` line when a call failed.
+
+        Only when ``_tools_failed`` is non-zero: a turn whose every call
+        succeeded reads fine from the ✓ cards alone and gets no extra message.
+        The point is the opposite case the issue describes — a turn that kept
+        streaming and completed while one call failed or could not be rendered —
+        where without this the only failure signal is the generic red card,
+        which overstates a single failed call as the whole step blowing up.
+        Best-effort: MUST NOT raise (decoration, posted after the answer).
+        """
+        if self._tools_failed <= 0:
+            return
+        succeeded = self._tools_finished - self._tools_failed
+        calls = "call" if self._tools_finished == 1 else "calls"
+        note = (
+            f"ℹ️ {self._tools_finished} tool {calls} · "
+            f"{succeeded} succeeded · {self._tools_failed} failed. "
+            "The reply completed; only the failed call(s) above did not."
+        )
+        try:
+            await self.slack.post_message(self.channel, note, self.thread_ts)
+        except Exception:
+            logger.warning("Slack: posting the tool-accounting note failed", exc_info=True)
+
     def _tool_elapsed_str(self) -> str:
         """Formatted elapsed time for the active tool, or '' (native helper)."""
         if not self._tool_start_time:
@@ -1452,12 +1535,11 @@ class SlackRenderer(Renderer):
         if self._use_slack_stream:
             await self._flush_stream_buffer(final=True)
         if self._active_task_id:
-            elapsed = self._tool_elapsed_str()
             self._cancel_tool_timer()
-            ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-            await self._append_task(self._active_task_id, ct, "complete")
+            await self._finalize_active_task()
         self._task_counter += 1
         self._active_task_id = f"tool_{self._task_counter}"
+        self._active_tool_call_id = tool_call_id or ""
         self._active_task_title = tool_purpose or tool_name
         await self._append_task(
             self._active_task_id, self._active_task_title, "in_progress", details=tool_name
@@ -1477,11 +1559,8 @@ class SlackRenderer(Renderer):
         )
         if is_wait and self._use_slack_stream and self._stream_ts:
             if self._active_task_id:
-                elapsed = self._tool_elapsed_str()
                 self._cancel_tool_timer()
-                ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-                await self._append_task(self._active_task_id, ct, "complete")
-                self._active_task_id = ""
+                await self._finalize_active_task()
             # This message ends here and its accumulated source is discarded, so
             # no seal will ever extract the withheld markup. Append it as written:
             # a visible path is the honest degradation, a dropped picture is not.
@@ -1594,11 +1673,8 @@ class SlackRenderer(Renderer):
         # the flag past the delivery, the answer-carrying send simply propagates
         # on failure and no call site has to reset a flag.
         if self._active_task_id and self._stream_ts is not None:
-            elapsed = self._tool_elapsed_str()
             self._cancel_tool_timer()
-            ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-            await self._append_task(self._active_task_id, ct, "complete")
-            self._active_task_id = ""
+            await self._finalize_active_task()
         self._cancel_tool_timer()
         # The stream is over, so a held comment is the reply's tail: drop it
         # when the tail grammar recognizes it on the whole reply, release it
@@ -1768,6 +1844,12 @@ class SlackRenderer(Renderer):
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status clear", exc_info=True)
+        # Per-call accounting: when at least one tool call this turn did NOT
+        # succeed, post one honest summary so a single failed/unrenderable call
+        # among many is not mistaken for a whole-step failure. Best-effort and in
+        # the decoration zone — the answer already delivered above, so a failed
+        # note must never turn a delivered turn into a recorded failure.
+        await self._post_tool_accounting_note()
         # Timing footer (always posted at turn end), mirroring native.
         turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
         footer_blocks, footer_text = build_timing_footer(turn_elapsed, None)

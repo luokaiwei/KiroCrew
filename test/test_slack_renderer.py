@@ -18,6 +18,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
     AcpEvent,
 )
 from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
@@ -72,7 +73,7 @@ class _RecSlack:
         return True
 
     async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
-        self.calls.append(("append_task", {"title": title, "status": status}))
+        self.calls.append(("append_task", {"title": title, "status": status, "details": details}))
         return True
 
     async def set_thread_status(self, channel, thread_ts, status):
@@ -98,7 +99,7 @@ class _RecSlack:
         return None
 
     async def post_message(self, channel, text, thread_ts=None, **kw):
-        self.calls.append(("post_message", {"text": text}))
+        self.calls.append(("post_message", {"text": text, "thread_ts": thread_ts}))
         return self._ts()
 
 
@@ -1768,3 +1769,101 @@ class TestTransportRedactionNotice:
         )
         stops = [kw for m, kw in rec.calls if m == "stop_stream"]
         assert len(stops) == 1 and "[REDACTED: credential]" in str(stops[0]["final_text"])
+
+
+class TestPerCallToolAccounting:
+    """A failed/unrenderable tool call among many is accounted for per call,
+    instead of the whole step reading as a generic failure."""
+
+    def _run(self, rec, events):
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(events)
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+    def test_failed_tool_result_marks_card_error_not_complete(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="x",
+                    tool_status="failed",
+                    tool_final=False,
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done anyway"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        # The call's card finalizes as "error" (Slack's non-✓ terminal status),
+        # naming the outcome — not a blanket "complete".
+        assert cards[0]["status"] == "in_progress"
+        assert cards[1]["status"] == "error"
+        assert cards[1]["details"] == "failed"
+        # And a per-turn accounting note explains the turn completed with one
+        # failed call, so the failure does not read as the whole step blowing up.
+        notes = [kw["text"] for m, kw in rec.calls if m == "post_message"]
+        assert any("1 tool call" in n and "1 failed" in n for n in notes), notes
+
+    def test_succeeded_tool_result_keeps_complete_and_posts_no_note(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="x",
+                    tool_status="completed",
+                    tool_final=True,
+                ),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        assert [c["status"] for c in cards] == ["in_progress", "complete"]
+        # A turn whose every call succeeded reads fine from the ✓ card; no note.
+        notes = [kw["text"] for m, kw in rec.calls if m == "post_message"]
+        assert not any("succeeded" in n and "failed" in n for n in notes), notes
+
+    def test_mixed_outcomes_account_each_call(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="a", title="ls", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="a", tool_status="completed"),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="b", title="read", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="b", tool_status="refused"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        cards = [kw for m, kw in rec.calls if m == "append_task"]
+        # a: in_progress; b starts (finalizes a complete); b finalizes error at done.
+        assert cards[0]["status"] == "in_progress"  # a opens
+        assert cards[1]["status"] == "complete"  # a closes (succeeded) when b opens
+        assert cards[2]["status"] == "in_progress"  # b opens
+        assert cards[3]["status"] == "error"  # b closes (refused) at done
+        assert cards[3]["details"] == "refused"
+        notes = [kw["text"] for m, kw in rec.calls if m == "post_message"]
+        # "2 tool calls · 1 succeeded · 1 failed"
+        note = next(n for n in notes if "succeeded" in n and "failed" in n)
+        assert "2 tool calls" in note and "1 succeeded" in note and "1 failed" in note
+
+    def test_accounting_note_goes_to_the_thread(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="x", title="grep", tool_final=False),
+                AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="x", tool_status="cancelled"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        note = next(kw for m, kw in rec.calls if m == "post_message" and "failed" in kw["text"])
+        assert note["thread_ts"] == "t1"
