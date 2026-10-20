@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { useConnectionsSubTab } from './useConnectionsSubTab'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import { api, ApiError, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
@@ -1321,7 +1322,7 @@ function ConnectionCard({
 export default function ConnectionsPage({ servicesEnabled = false }: { servicesEnabled?: boolean } = {}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<'services' | 'mcp-servers'>('services')
+  const [activeTab, setActiveTab] = useConnectionsSubTab()
   const [search, setSearch] = useState('')
   /** Pending connect attempts. `kind` decides Cancel semantics (only a
    *  cancelled *new* connect uninstalls the entry it just created); `sinceTs`
@@ -1868,7 +1869,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
-    setActiveTab(current => current === 'services' ? 'mcp-servers' : 'services')
+    setActiveTab(activeTab === 'services' ? 'mcp-servers' : 'services')
   }
   const openProvider = (slug: string) => {
     setSearch('')
