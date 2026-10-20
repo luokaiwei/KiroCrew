@@ -553,6 +553,55 @@ class TestAdvertisedModelCache:
         assert mr.refresh_advertised_models("claude_code", []) is False
         assert mr.advertised_models("claude_code") == ["a"]
 
+    def test_merge_unions_a_snapshot_and_never_shrinks(self, monkeypatch):
+        # A session/new snapshot that omits a previously-served id (the free-tier
+        # answer of a token-refresh race, issue #21385) must only ADD to the
+        # cache, never drop. The entitled id survives so the next session's seed
+        # and the cold picker keep offering it.
+        served = ["opus", "sonnet", "haiku"]
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(served)})
+        degraded = ["haiku"]  # free-tier default: Claude flagships dropped
+        # The degraded snapshot adds nothing new, so the cache is unchanged.
+        assert mr.refresh_advertised_models("claude_code", degraded, merge=True) is False
+        assert mr.advertised_models("claude_code") == served
+
+    def test_merge_appends_new_ids_after_the_cached_ones(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "sonnet"]})
+        # A richer snapshot that names a genuinely new model adds it at the end,
+        # cached order preserved; duplicates fold.
+        assert mr.refresh_advertised_models("claude_code", ["sonnet", "fable"], merge=True) is True
+        assert mr.advertised_models("claude_code") == ["opus", "sonnet", "fable"]
+
+    def test_merge_warms_a_cold_cache(self, monkeypatch):
+        # merge onto an empty bucket is just the snapshot — the first session of
+        # an install still populates the cache.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        assert mr.refresh_advertised_models("claude_code", ["opus", "sonnet"], merge=True) is True
+        assert mr.advertised_models("claude_code") == ["opus", "sonnet"]
+
+    def test_default_replace_still_shrinks_the_authoritative_catalog(self, monkeypatch):
+        # The --list-models kiro path is authoritative: a row the catalog no
+        # longer carries is a real removal, so the default (replace) must drop
+        # it. merge is opt-in and does not change this caller.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"acp": ["a", "b", "c"]})
+        assert mr.refresh_advertised_models("acp", ["a", "c"]) is True
+        assert mr.advertised_models("acp") == ["a", "c"]
+
+    def test_merge_applies_the_retention_bound_to_the_whole(self, monkeypatch, caplog):
+        # The union is admitted as one list, so the id cap bounds the merged
+        # result — a cached-plus-snapshot total over the cap is refused down to
+        # the cap, not applied per side.
+        cached = [f"c{i}" for i in range(mr.ADVERTISED_MODELS_MAX_IDS - 1)]
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(cached)})
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert (
+                mr.refresh_advertised_models("claude_code", ["n0", "n1", "n2"], merge=True) is True
+            )
+        kept = mr.advertised_models("claude_code")
+        assert len(kept) == mr.ADVERTISED_MODELS_MAX_IDS
+        # Cached ids come first, then as many new ones as fit (one here).
+        assert kept == cached + ["n0"]
+
     def test_refresh_refuses_an_over_long_id_and_says_so_once(self, monkeypatch, caplog):
         # The id is REFUSED, not truncated: a truncated id names a different
         # model, or none. The rest of the list is retained, and the overflow is

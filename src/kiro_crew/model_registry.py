@@ -547,7 +547,7 @@ def _load_advertised_models() -> None:
 _load_advertised_models()
 
 
-def refresh_advertised_models(provider: str, ids: Sequence[str]) -> bool:
+def refresh_advertised_models(provider: str, ids: Sequence[str], *, merge: bool = False) -> bool:
     """Ingest a provider's advertised model ids into the cache.
 
     In-memory only (cheap, non-blocking) so it is safe to call from an async
@@ -560,16 +560,48 @@ def refresh_advertised_models(provider: str, ids: Sequence[str]) -> bool:
     a good cached list from a prior session) and returns ``False``. The stored
     list is deduped preserving order.
 
+    ``merge`` chooses how a non-empty snapshot meets the cached list:
+
+    * ``False`` (default) — REPLACE. The caller's list is authoritative, so the
+      cache becomes exactly it. This is the ``--list-models`` catalog path
+      (:func:`refresh_kiro_catalog`), where a row dropped from the catalog is a
+      real removal the cache must reflect.
+    * ``True`` — UNION the snapshot ONTO the cache (cached ids first, in order,
+      then new ones), so the snapshot can only ADD, never drop. This is for an
+      ENTITLEMENT-FILTERED ``session/new`` snapshot
+      (``AcpClient._capture_available_models``): a session started while a token
+      refresh races the entitlement lookup comes back as the free-tier default
+      and omits models the account actually owns, and that degraded list is what
+      seeds the next session's ``availableModels`` and the cold picker
+      (:func:`seed_available_models` / ``_advertised_cc_models``). Replacing with
+      it would persist the degrade to ``provider_models.json`` and hide entitled
+      models for the life of the install until something re-probes (issue
+      #21385). Unioning keeps the cache a SUPERSET of everything the provider has
+      been observed to serve — which is exactly what this cache is for: it seeds
+      an allowlist and unlocks windows, and entitlement is still enforced live
+      per session (``model_is_unusable`` against the LIVE snapshot), never from
+      this cache, so a stale-wide entry costs a seed row, not a wrong grant.
+
     Bounded at retention by ``ADVERTISED_MODELS_MAX_IDS`` distinct ids and
     ``ADVERTISED_MODEL_ID_MAX_CHARS`` per id, the same pair
     :func:`refresh_kiro_windows` applies to the same rows. An id past either
     bound is refused (never truncated) and gets no entry anywhere; the overflow
     is counted and logged once per call so a shortened list is not mistaken for
-    a backend that never named those ids.
+    a backend that never named those ids. The union is admitted as one list so
+    the bound applies to the merged result, not to each side independently.
     """
     clean = _admit_ids(ids, f"advertised-model cache for {provider}")
     if not clean:
         return False
+    if merge:
+        # Cached ids first (preserving their order), then the snapshot's new
+        # ones: the result is a superset, so a degraded snapshot can only add.
+        # Re-admitted as one list so the retention bound is applied to the
+        # merged whole, not to either side alone.
+        clean = _admit_ids(
+            [*_ADVERTISED_MODELS.get(provider, ()), *clean],
+            f"advertised-model cache for {provider}",
+        )
     if _ADVERTISED_MODELS.get(provider) == clean:
         return False
     _ADVERTISED_MODELS[provider] = clean

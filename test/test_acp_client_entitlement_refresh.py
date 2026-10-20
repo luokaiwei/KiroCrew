@@ -599,3 +599,72 @@ async def test_shutdown_tears_down_an_in_flight_entitlement_probe():
     await client.shutdown()
 
     assert inflight.cancelled() or cancelled.is_set()
+
+
+# ── Cross-session advertised-model cache: shrink only on a trustworthy read ──
+# issue #21385. The persisted provider_models.json bucket seeds the next
+# session's availableModels and the cold picker. A birth session/new snapshot
+# can be the free-tier default of a token-refresh race, so it may only ADD to
+# the bucket (union); only the dedicated entitlement PROBE, whose answer is
+# probe-confirmed, is trustworthy enough to SHRINK it — so a genuine entitlement
+# loss narrows the picker while a race never does.
+
+
+def _claude_client(advertised: list[str], model: str = "auto") -> AcpClient:
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+
+    client = AcpClient()
+    client._session_id = "sess-cc"
+    client._model = model
+    client._acp_backend = ACP_BACKEND_CLAUDE  # a member of ADVERTISED_MODEL_SELECTION
+    client._available_models = _rows(*advertised)
+    client._available_models_captured_at = time.monotonic()
+    client._available_models_probe_confirmed = False
+    return client
+
+
+@pytest.mark.asyncio
+async def test_confirmed_probe_shrinks_the_persisted_cache(monkeypatch):
+    """A genuine entitlement loss surfaces on the probe-confirmed read, so the
+    cross-session cache narrows — a later session's seed and the cold picker
+    stop offering the lost model, and a turn on it fails in the picker, not at
+    the backend."""
+    from kiro_crew import model_registry as mr
+
+    monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "sonnet", "haiku"]})
+    persisted: list[int] = []
+    monkeypatch.setattr(mr, "persist_advertised_models", lambda: persisted.append(1))
+
+    client = _claude_client(["opus", "sonnet", "haiku"])
+    # The account lost opus/sonnet; the dedicated probe returns the real,
+    # narrower list and dates it now.
+    client._probe_advertised_models = AsyncMock(  # type: ignore[method-assign]
+        return_value=(_rows("haiku"), time.monotonic())
+    )
+    # Force a re-probe (snapshot is unconfirmed, so the TTL fast-path is skipped).
+    result = await client.refresh_available_models()
+
+    assert [r["modelId"] for r in result] == ["haiku"]
+    assert client._available_models_probe_confirmed is True
+    # The authoritative read REPLACED the bucket: the lost models are gone.
+    assert mr.advertised_models("claude_code") == ["haiku"]
+    assert persisted == [1]
+
+
+@pytest.mark.asyncio
+async def test_birth_snapshot_never_shrinks_the_persisted_cache(monkeypatch):
+    """The race-prone birth session/new capture may only ADD to the bucket, so a
+    degraded (free-tier) snapshot cannot hide models a prior session saw."""
+    from kiro_crew import model_registry as mr
+
+    monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "sonnet", "haiku"]})
+
+    client = _claude_client(["haiku"])  # the degraded birth snapshot
+    client._capture_available_models(
+        {"models": {"availableModels": _rows("haiku"), "currentModelId": "haiku"}}
+    )
+
+    # Union, never shrink: the entitled models the birth snapshot omitted survive.
+    assert mr.advertised_models("claude_code") == ["opus", "sonnet", "haiku"]
+    # Nothing changed, so no persist is warranted.
+    assert client._advertised_models_changed is False

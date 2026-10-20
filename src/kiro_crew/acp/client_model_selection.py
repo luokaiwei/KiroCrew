@@ -317,9 +317,26 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
         # member and feeds nothing; a future adapter with the same served-vs-
         # stored spelling gap opts into the set and is fed here automatically,
         # keyed by its own registry namespace.
+        #
+        # ``merge=True``: this BIRTH snapshot is ENTITLEMENT-FILTERED (what the
+        # signed-in account was served on THIS session/new) and never
+        # probe-confirmed, so a session started while a token refresh races the
+        # entitlement lookup comes back as the free-tier default and omits
+        # models the account owns. Replacing the cross-session cache with it
+        # would persist that degrade to provider_models.json and seed the next
+        # session's availableModels (and the cold picker) with the shrunken
+        # list, hiding entitled models for the life of the install until
+        # something re-probes (issue #21385). Unioning lets a birth snapshot
+        # only ADD, never drop. The authoritative SHRINK — a genuine entitlement
+        # loss (seat removed, plan downgraded) — is owned by the dedicated
+        # entitlement probe in ``refresh_available_models``, whose
+        # probe-confirmed answer REPLACES the cache; entitlement is still
+        # enforced live per session against the LIVE snapshot, never from this
+        # cache, so a briefly-stale-wide bucket never grants a model the account
+        # cannot run.
         if self._uses_advertised_model_selection:
             self._advertised_models_changed = model_registry.refresh_advertised_models(
-                self._model_registry_namespace, self._advertised_model_ids()
+                self._model_registry_namespace, self._advertised_model_ids(), merge=True
             )
 
 
@@ -421,6 +438,22 @@ async def refresh_available_models(self: AcpClient) -> list[dict[str, str]]:
         self._available_models = list(fresh)
         self._available_models_captured_at = answered_at
         self._available_models_probe_confirmed = True
+        # This is the AUTHORITATIVE read: a dedicated entitlement probe, not the
+        # birth ``session/new`` snapshot. So it is allowed to SHRINK the
+        # persisted cross-session cache (default REPLACE), where the suspect
+        # birth-snapshot capture may only union onto it (``merge=True`` in
+        # ``_capture_available_models``). That asymmetry is the fix for issue
+        # #21385's opposite failure: a token-refresh race degrades only the
+        # unconfirmed birth snapshot, so it never narrows the cache, while a
+        # genuine entitlement loss (a seat removed, a plan downgraded) surfaces
+        # on this probe-confirmed read and correctly narrows the seed and the
+        # cold picker — so a turn fails in the picker, not at the backend.
+        if self._uses_advertised_model_selection:
+            if model_registry.refresh_advertised_models(
+                self._model_registry_namespace, runtime_models.advertised_model_ids(fresh)
+            ):
+                self._advertised_models_changed = True
+                await self._persist_advertised_models_if_changed()
     return list(fresh)
 
 

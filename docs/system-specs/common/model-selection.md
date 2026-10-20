@@ -246,11 +246,44 @@ freshness.
 
 The cache is warm for every backend, but from two different sources. For a
 backend in `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the client captures the
-`session/new` list. For `kiro` and `kas` the `acp` bucket is filled by
+`session/new` list. How that capture meets the cache depends on whether the
+snapshot is TRUSTWORTHY, because the `session/new` list is entitlement-filtered
+and its trust differs by which capture produced it:
+
+- The BIRTH snapshot — the list the session was born with
+  (`_capture_available_models`) — is never probe-confirmed and can fall inside
+  the token-refresh spawn race, so it comes back as the free-tier default and
+  omits models the account owns. It UNIONS onto the cache
+  (`refresh_advertised_models(..., merge=True)`): it may only ADD, never drop.
+  This same cache seeds the next session's `availableModels`
+  (`seed_available_models`) and the cold picker (`_advertised_cc_models`), so
+  letting a race-degraded birth snapshot shrink it would persist the degrade to
+  `provider_models.json` and hide entitled models for the life of the install
+  until something re-probes.
+- The dedicated entitlement PROBE (`AcpClient.refresh_available_models`, a
+  throwaway `session/new` whose non-empty answer marks the snapshot
+  probe-confirmed) is the AUTHORITATIVE read. Its fresh answer REPLACES the
+  cache (plain `refresh_advertised_models`, no `merge`), so it MAY shrink it: a
+  genuine entitlement loss — a seat removed, a plan downgraded — surfaces here
+  and correctly narrows the seed and the cold picker, so a turn on a
+  no-longer-entitled model fails in the picker, not at the backend.
+
+That asymmetry is the whole fix (issue #21385): it tells "snapshot taken during a
+token refresh, not trustworthy" apart from "a real shrink". It is safe in both
+directions because the cache is a vocabulary that seeds an allowlist and unlocks
+windows, never the entitlement authority — entitlement is enforced live per
+session (`model_is_unusable`/`resolve_usable_model` against the LIVE `session/new`
+snapshot, revalidated below), so a briefly-stale-wide bucket costs one seed row
+the live check still refuses, never a wrong grant, and the authoritative probe
+reconciles it on the next trustworthy read. The persistent cache is written only
+by `AcpClient`; the pooled `AcpSessionHandle` heals only its own in-session
+snapshot (which the live picker reads directly) and never the cross-session
+bucket. For `kiro` and `kas` the `acp` bucket is filled by
 `GET /api/models` from the `chat --list-models` catalog — the UNFILTERED rows,
 before the deprecation and entitlement narrowing, because a deprecated or
 unentitled id is still a kiro id and dropping it would make a native pin read as
-foreign. That source is kiro's own ground truth and is deliberately NOT a
+foreign. That source is kiro's own ground truth, is AUTHORITATIVE (a plain
+`refresh_advertised_models` REPLACE) and is deliberately NOT a
 `session/new` payload: the registry attributes that payload to `claude-agent-acp`,
 and a kiro session's list is scoped to the agent that session started. With the
 bucket warm, the chip and the provider factory reach the same foreign-pin verdict
