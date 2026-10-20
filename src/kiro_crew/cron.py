@@ -1078,6 +1078,24 @@ class CronService:
                 if job.id == job_id:
                     if expected_owner is not None and job.created_by != expected_owner:
                         raise PermissionError("Cron job ownership violation")
+                    # Snapshot the fence-guarded fields AND the execution-state
+                    # revision BEFORE mutating, so a failed save can be rolled
+                    # back correctly. These three fields are ALSO written by
+                    # record_failure/record_success on the loop thread, so a
+                    # fixed snapshot/restore races a concurrent run either way
+                    # (reinstating an auto-pause a success cleared, or reverting
+                    # one a failure set), and a value comparison cannot tell the
+                    # run's write from our own identical one. The revision is the
+                    # fence: every execution write of the auto-pause fields bumps
+                    # it, so an unchanged revision across the save means ours is
+                    # the only write and an exact restore of them is safe; a
+                    # changed one means keep the run's write. user_paused is never
+                    # execution-written (always restored) and enabled is always
+                    # re-derived, so neither needs the fence.
+                    before_user_paused = job.user_paused
+                    before_auto_paused = job.auto_paused
+                    before_failures = job.consecutive_failures
+                    before_revision = job.exec_state_revision
                     job.user_paused = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
@@ -1094,7 +1112,33 @@ class CronService:
                         # A user resume that lifts an auto-pause restores execute
                         # permission — audit it like the auto-pause transition.
                         job._audit_pause_change("auto_pause_cleared")
-                    self._save()
+                    try:
+                        self._save()
+                    except BaseException:
+                        # user_paused is NEVER written by execution, so the
+                        # failed save left the disk copy's user_paused at its
+                        # pre-call value: always restore it, whatever a run did.
+                        job.user_paused = before_user_paused
+                        if job.exec_state_revision == before_revision:
+                            # No run touched the auto-pause fields in the save
+                            # window, so ours is the only write: restore them
+                            # exactly. The failed _save never reached
+                            # _record_fingerprint, so the tracked digest still
+                            # matches the untouched file and no fingerprint reset
+                            # is needed.
+                            job.auto_paused = before_auto_paused
+                            job.consecutive_failures = before_failures
+                        # else: a concurrent record_failure/record_success/
+                        # one-shot auto-pause wrote the auto-pause fields during
+                        # the save; keep that write -- it may have crossed the
+                        # threshold or cleared a pause, which no fixed restore
+                        # reproduces. enabled is ALWAYS derived last from the
+                        # settled pause flags, so it agrees with what a reload of
+                        # the disk copy (which the failed save left unchanged)
+                        # would show, and an execution writer that touched only
+                        # enabled is recomputed rather than compared.
+                        job.enabled = not (job.user_paused or job.auto_paused)
+                        raise
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
                     return True
             if expected_owner is not None:

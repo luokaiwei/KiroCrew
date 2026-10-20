@@ -15,11 +15,16 @@ succeeds.
 The contract: a mutator whose owned state is not shared with the execution
 thread rolls its in-memory change back on ANY save failure, the way the remove
 and update cores already do, extended to the add (×2), ack, unack and adopt
-cores plus the loop-stall breaker. ``enable_job`` (pause/resume) is DELIBERATELY
-excluded: its ``enabled``/``auto_paused``/``consecutive_failures`` are
-execution-owned, so a field-scoped rollback races a concurrent
-``record_failure``/``record_success`` and a correct fix needs an execution-state
-revision fence (deferred, see the PR's Not a goal). These tests inject the
+cores plus the loop-stall breaker. ``enable_job`` (pause/resume) CANNOT use a
+plain field-scoped restore: its ``enabled``/``auto_paused``/``consecutive_failures``
+are execution-owned, so a concurrent ``record_failure``/``record_success`` in the
+save window races it in opposite directions (reinstating an auto-pause a success
+cleared, or reverting one a failure set). It instead uses an EXECUTION-STATE
+REVISION FENCE (``CronJob.exec_state_revision``, bumped at every execution write
+of the auto-pause fields): ``_enable_job_locked`` restores
+``auto_paused``/``consecutive_failures`` only when the revision is unchanged
+across the save, ALWAYS restores the execution-immutable ``user_paused``, and
+ALWAYS re-derives ``enabled`` from the settled pause flags. These tests inject the
 failure at the ``atomic_write`` boundary (a real ``OSError``, NOT
 ``CronStoreUnreadable``), so the real ``_save`` -> raise chain runs and the
 ``_load_failed`` latch is deliberately NOT what is being exercised.
@@ -63,6 +68,33 @@ def _disk_full_on_save() -> Iterator[None]:
     real = aw.atomic_write
 
     def failing(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    aw.atomic_write = failing  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        aw.atomic_write = real  # type: ignore[assignment]
+
+
+@contextlib.contextmanager
+def _save_fails_after(on_save: "object") -> Iterator[None]:
+    """Run ``on_save()`` and THEN fail the save, simulating a concurrent run.
+
+    The execution-state fence exists because ``record_failure`` /
+    ``record_success`` run on the loop thread and can write the pause fields in
+    the exact window between ``_enable_job_locked``'s mutation and its failing
+    ``_save``. This reproduces that window deterministically: the patched
+    ``atomic_write`` invokes the callback (which performs the concurrent write
+    on the same job object) and only then raises ``ENOSPC``, so the real
+    ``_save`` -> raise chain runs with the fields already changed under it.
+    """
+    import kiro_crew.atomic_write as aw
+
+    real = aw.atomic_write
+
+    def failing(*_args: object, **_kwargs: object) -> None:
+        on_save()  # type: ignore[operator]
         raise OSError(errno.ENOSPC, "No space left on device")
 
     aw.atomic_write = failing  # type: ignore[assignment]
@@ -244,3 +276,186 @@ def test_a_healthy_save_still_mutates_on_every_rolled_back_path(tmp_path: Path) 
     assert set(reloaded) == {"added", "absent"}
     assert reloaded["added"].enabled
     assert reloaded["added"].session_key == "dashboard:owner"
+
+
+# ── enable_job: the execution-state revision fence ──
+#
+# enable_job (pause/resume) writes enabled/auto_paused/consecutive_failures,
+# the SAME fields record_failure/record_success write on the loop thread. A
+# plain field-scoped restore races a concurrent run in both directions, so the
+# rollback is gated on CronJob.exec_state_revision: restore only when no run
+# bumped it across the save, otherwise keep the run's write.
+
+
+def test_a_failed_pause_rolls_back_when_no_run_touched_the_fields(tmp_path: Path) -> None:
+    """The quiet case: no concurrent run, so the revision is unchanged and the
+    pause is restored exactly, like the other rollback cores."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="pausable", message="m", every_secs=3600)
+    assert svc._jobs[0].enabled and not svc._jobs[0].user_paused, "precondition: enabled"
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    live = svc._jobs[0]
+    assert live.enabled and not live.user_paused, (
+        "a refused pause with no concurrent run must leave the job enabled in the "
+        "live cache -- the scheduler reads it and the disk copy never changed"
+    )
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and reloaded.enabled and not reloaded.user_paused
+
+
+def test_a_failed_resume_rolls_back_when_no_run_touched_the_fields(tmp_path: Path) -> None:
+    """The quiet resume case: a failed re-enable of a user-paused job restores
+    the paused state exactly."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="resumable", message="m", every_secs=3600)
+    svc.enable_job(job.id, enabled=False)
+    assert svc._jobs[0].user_paused and not svc._jobs[0].enabled, "precondition: paused"
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=True)
+
+    live = svc._jobs[0]
+    assert live.user_paused and not live.enabled, (
+        "a refused resume with no concurrent run must leave the job paused in the "
+        "live cache -- the disk copy still says paused"
+    )
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and reloaded.user_paused and not reloaded.enabled
+
+
+def test_a_concurrent_auto_pause_survives_a_failed_pause_save(tmp_path: Path) -> None:
+    """The race the fence exists for: a run crosses the auto-pause threshold in
+    the pause's save window. A fixed restore would REVERT that auto-pause; the
+    revision changed, so the fence keeps it. The job stays stopped (it was
+    being paused anyway), but now for the durable auto_paused reason the run
+    recorded, not a transient in-memory-only user pause the next reload drops."""
+    from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
+
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="racing", message="m", every_secs=3600)
+    live = svc._jobs[0]
+    # One failure below the threshold: the NEXT record_failure auto-pauses.
+    live.consecutive_failures = _AUTO_PAUSE_THRESHOLD - 1
+
+    with _save_fails_after(live.record_failure):
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    assert live.auto_paused, (
+        "the concurrent record_failure crossed the threshold and set auto_paused "
+        "during the save; a field-scoped restore would have reverted it, stranding "
+        "a failing job as merely user-paused in memory and enabled on the next reload"
+    )
+    assert live.consecutive_failures == _AUTO_PAUSE_THRESHOLD, "the run's count is kept"
+    assert not live.enabled, "an auto-paused job is not enabled"
+
+
+def test_a_concurrent_success_survives_a_failed_resume_save(tmp_path: Path) -> None:
+    """The opposite race: a run clears an auto-pause via record_success in the
+    resume's save window. A fixed restore would REINSTATE the auto-pause; the
+    revision changed, so the fence keeps the clear and re-derives enabled from
+    the live pause flags."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="recovering", message="m", every_secs=3600)
+    live = svc._jobs[0]
+    # Put it in the auto-paused state a failing run would have produced.
+    live.auto_paused = True
+    live.enabled = False
+    live.consecutive_failures = 5
+
+    with _save_fails_after(live.record_success):
+        with pytest.raises(OSError):
+            # The user also tries to resume; its save fails.
+            svc.enable_job(job.id, enabled=True)
+
+    assert not live.auto_paused, (
+        "the concurrent record_success cleared auto_paused during the save; a "
+        "field-scoped restore would have reinstated it, so the recovered job would "
+        "read as auto-paused in memory until the next reload"
+    )
+    assert live.consecutive_failures == 0, "the run's counter reset is kept"
+    assert not live.user_paused, "the user's resume (user_paused=False) is the authority"
+    assert live.enabled, "enabled is re-derived: neither user- nor auto-paused"
+
+
+def test_record_failures_early_return_does_not_bump_the_revision(tmp_path: Path) -> None:
+    """The fence's negative control: a run that started auto-paused and finds
+    the pause lifted under it records NOTHING (record_failure early-returns), so
+    it must not bump exec_state_revision -- otherwise it would wrongly invalidate
+    a concurrent pause/resume rollback though it wrote no field."""
+    svc = CronService(base_dir=tmp_path)
+    svc.add_job(name="noop-fail", message="m", every_secs=3600)
+    live = svc._jobs[0]
+    # The exact early-return condition: started auto-paused, pause since lifted.
+    live.auto_paused_at_start = True
+    live.auto_paused = False
+    before = live.exec_state_revision
+
+    live.record_failure()
+
+    assert live.exec_state_revision == before, (
+        "record_failure's early-return path wrote no pause field, so it must not "
+        "bump the fence and spuriously defeat a concurrent rollback"
+    )
+    assert live.consecutive_failures == 0, "precondition: the early return counted nothing"
+
+
+def test_a_failed_resume_reverts_user_paused_even_when_a_run_bumps_the_revision(
+    tmp_path: Path,
+) -> None:
+    """user_paused is NEVER written by execution, so a failed resume must restore
+    it to the disk value REGARDLESS of a concurrent run. The revision gate covers
+    only auto_paused/consecutive_failures; letting a changed revision keep the
+    resume's user_paused=False would leave the job enabled in memory though the
+    disk copy the failed save never touched still says user-paused."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="resume-race", message="m", every_secs=3600)
+    svc.enable_job(job.id, enabled=False)  # user-paused, saved
+    live = svc._jobs[0]
+    assert live.user_paused and not live.enabled, "precondition: user-paused on disk"
+
+    # A run recovers (record_success) during the resume's failing save -- it
+    # bumps the revision and clears auto-pause state, but touches no user_paused.
+    with _save_fails_after(live.record_success):
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=True)
+
+    assert live.user_paused, (
+        "the resume's save failed, so the disk copy is still user-paused; a "
+        "concurrent run never writes user_paused, so it must be restored -- not "
+        "left at the resume's False"
+    )
+    assert not live.enabled, "enabled is re-derived: a user-paused job is not enabled"
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and reloaded.user_paused and not reloaded.enabled
+
+
+def test_a_concurrent_oneshot_autopause_survives_a_failed_pause_save(tmp_path: Path) -> None:
+    """The fence must observe EVERY execution write of the auto-pause fields, not
+    only record_failure/record_success. The failed-one-shot auto-pause path bumps
+    the revision through the same _note_exec_state_change helper, so a plain
+    auto_paused write landing in a pause's save window is kept, not reverted."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="oneshot-race", message="m", every_secs=3600)
+    live = svc._jobs[0]
+
+    def concurrent_autopause() -> None:
+        # Exactly the write run_execution's failed-one-shot branch performs,
+        # routed through the same helper the real site uses.
+        live.enabled, live.auto_paused = False, True
+        live._note_exec_state_change()
+
+    with _save_fails_after(concurrent_autopause):
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    assert live.auto_paused, (
+        "an execution auto_paused write that is not record_failure still bumps the "
+        "fence, so a field-scoped restore must not revert it"
+    )
+    assert not live.enabled, "an auto-paused job is not enabled"

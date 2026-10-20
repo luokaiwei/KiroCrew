@@ -1112,7 +1112,12 @@ _CANCEL_REPORTS: dict[str | None, tuple[str, str | None, tuple[str, bool, bool] 
     "reloaded_then_busy": _held(_BUSY),
     # A failed park answers success only when the saved store shows the job cannot
     # run again: a pause or a removal this process could not save is not proof.
-    "pause_unsaved_then_write_error": (_held(_ENOSPC)[0], _HELD_MESSAGE, ("at", False, True)),
+    # The pause's OWN save also failed and no run touched the fields, so the
+    # execution-state revision fence reverts it in memory exactly as the other
+    # mutators roll back a rejected write -- leaving user_paused False, the same
+    # live shape as a plain write_error cancel. The park still cannot be proven
+    # saved (disk never took the pause), so the HELD message stands.
+    "pause_unsaved_then_write_error": _held(_ENOSPC),
     "paused_here_then_write_error": _paused(_ENOSPC, "at"),
     "removed_unsaved_then_busy": (_held(_BUSY)[0], _HELD_MESSAGE, None),
     "paused_here_then_unreadable": (_UNREAD_NOTE, _HELD_MESSAGE, ("at", False, True)),

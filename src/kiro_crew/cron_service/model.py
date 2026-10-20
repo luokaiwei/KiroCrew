@@ -138,6 +138,32 @@ class CronJob:
     # leave the store's pause state and failure count as they find them. None
     # for a record no run stamped: the run's pause state is applied as is.
     auto_paused_at_start: bool | None = None
+    # Runtime-only (never serialized): the EXECUTION-STATE REVISION, a per-job
+    # counter bumped by every execution-owned write of the auto-pause reason
+    # (``auto_paused`` / ``consecutive_failures``) on the loop thread --
+    # :meth:`record_failure`, :meth:`record_success`, and the failed-one-shot
+    # auto-pause in ``run_execution`` -- all through
+    # :meth:`_note_exec_state_change`. It is the fence
+    # :meth:`CronService._enable_job_locked` reads to roll a FAILED pause/resume
+    # save back correctly. A fixed snapshot/restore of those fields cannot: a
+    # concurrent ``record_failure`` crossing the auto-pause threshold in the
+    # save window must survive a failed pause (not be reverted), and a
+    # concurrent ``record_success`` clearing an auto-pause must survive a failed
+    # resume (not be reinstated) -- opposite directions no fixed field set
+    # satisfies, and a value comparison cannot tell "the run set it" from "the
+    # pause set it to the same value" (a resume sets auto_paused False, exactly
+    # as record_success does). ``_enable_job_locked`` snapshots this revision
+    # before mutating and, on a save failure, restores ``auto_paused`` /
+    # ``consecutive_failures`` ONLY when the revision is unchanged across the
+    # save; a changed revision keeps the run's write. ``user_paused`` is never
+    # execution-written, so it is ALWAYS restored, and ``enabled`` is ALWAYS
+    # re-derived from the settled pause flags -- so an execution writer that
+    # touches only ``enabled`` (a one-shot park) needs no bump, since its write
+    # is recomputed rather than compared. Starts at 0 and only ever rises within
+    # a process; a store reload replaces the job object and resets it, which is
+    # harmless -- it is read only within one locked ``_enable_job`` transaction,
+    # never persisted or compared across reloads.
+    exec_state_revision: int = 0
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -355,6 +381,16 @@ class CronJob:
         if not self.result_produced:
             self.last_result = ""
 
+    def _note_exec_state_change(self) -> None:
+        """Bump the execution-state revision for a loop-thread auto-pause write.
+
+        Every execution-owned write of ``auto_paused`` / ``consecutive_failures``
+        on the loop thread calls this, so :meth:`CronService._enable_job_locked`
+        can tell a run wrote those fields during its save and keep the run's
+        write rather than reverting it. See the ``exec_state_revision`` field.
+        """
+        self.exec_state_revision += 1
+
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
 
@@ -397,6 +433,12 @@ class CronJob:
         self.failure_recorded = True
         if self.auto_paused_at_start and not self.auto_paused:
             return
+        # Past the early return, this call writes auto_paused/consecutive_failures.
+        # Bump the execution-state revision so a pause/resume save failing in this
+        # same window (``_enable_job_locked``) keeps this write instead of
+        # reverting it. Bumped here, not at the top, because the early-return path
+        # writes none of those fields and must not invalidate a concurrent rollback.
+        self._note_exec_state_change()
         self.consecutive_failures += 1
         if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
             self.enabled = False
@@ -432,6 +474,11 @@ class CronJob:
         reaper apply its pause state and count as they stand.
         """
         self.auto_paused_at_start = None
+        # This call always writes ``consecutive_failures`` (and may clear
+        # ``auto_paused``), all execution-owned. Bump the execution-state
+        # revision so a pause/resume save failing in this same window keeps this
+        # success instead of reinstating a pause it cleared.
+        self._note_exec_state_change()
         self.consecutive_failures = 0
         self.last_failure_hash = ""
         self.last_failure_at = 0.0

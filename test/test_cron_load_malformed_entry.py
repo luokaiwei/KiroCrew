@@ -640,7 +640,13 @@ async def test_numeric_field_consumer_matrix_pin(tmp_path) -> None:
         f.name
         for f in dataclasses.fields(CronJob)
         if f.type in ("int", "float", "int | None", "float | None")
-        and f.name not in ("fire_time_denied", "run_never_started")
+        # Runtime-only fields are never serialized, so a poisoned store value
+        # can never reach them -- they are not part of this deserialization
+        # matrix. exec_state_revision is the pause/resume rollback fence,
+        # bumped by record_failure/record_success and read only inside one
+        # locked _enable_job transaction; like fire_time_denied /
+        # run_never_started it has no store codec entry.
+        and f.name not in ("fire_time_denied", "run_never_started", "exec_state_revision")
     }
     assert numeric_fields == set(_NUMERIC_FIELD_DEFAULTS), (
         "a numeric CronJob field is not classified in _NUMERIC_FIELD_DEFAULTS -- "

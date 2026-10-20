@@ -428,6 +428,10 @@ async def _execute_with_timeout(
         if job.delete_after_run and job.last_status == "error" and not job.auto_paused:
             if not (job.fire_time_denied or job.run_never_started):
                 job.enabled, job.auto_paused = False, True
+                # Bump the execution-state revision like record_failure does:
+                # this auto_paused write runs on the loop thread and a
+                # concurrent _enable_job save must keep it, not revert it.
+                job._note_exec_state_change()
                 job._audit_pause_change("auto_paused")
 
 
