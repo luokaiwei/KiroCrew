@@ -631,7 +631,12 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
         )
     )
     procs: list[asyncio.subprocess.Process] = []
-    backend_pids: list[int] = []
+    # pid -> the process's start-time identity token, read WHILE it is alive.
+    # The survivor check below is a PID-reuse guard, not a bare existence probe:
+    # a recycled pid compares unequal (or unreadable -> ``None``), so a new,
+    # unrelated process landing on a reaped backend's pid number cannot read as
+    # one of our backends surviving.
+    backend_ids: dict[int, str | None] = {}
     try:
         await async_wait_until(
             lambda: transport.endpoint_exists(sock),
@@ -666,9 +671,15 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
             f"{fallback.read_text()}"
         )
         # The fake server records under ``<log>.d/<pid>.txt``, so the file names
-        # are the backend pids the daemon is answerable for.
-        backend_pids = [int(p.stem) for p in Path(f"{launch_log}.d").iterdir()]
-        assert len(backend_pids) == 3
+        # are the backend pids the daemon is answerable for. Capture each pid's
+        # start-time identity HERE, while the backend is still alive and before
+        # the reap below, so the post-teardown survivor check can tell a genuine
+        # survivor from a reaped pid recycled onto an unrelated process.
+        backend_ids = {
+            int(p.stem): pc.process_start_time(int(p.stem))
+            for p in Path(f"{launch_log}.d").iterdir()
+        }
+        assert len(backend_ids) == 3
     finally:
         await _reap(procs)
         stop.set()
@@ -684,7 +695,21 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
     # map, so the child was outside ``shutdown_all`` and outlived the daemon --
     # a zombie or a live process here, and its pipe transports still finalizing
     # after the test's loop closed.
-    survivors = [pid for pid in backend_pids if pc.pid_exists(pid)]
+    #
+    # The check is identity-pinned, not a bare ``pid_exists``: a reaped pid can
+    # be recycled onto an unrelated process between ``shutdown_all`` and here
+    # (common on a busy CI host, and Windows pids are small and recycle fast),
+    # and a bare existence probe would then read that stranger as a surviving
+    # backend and fail the test spuriously. A pid counts as a survivor only
+    # while it STILL names the same process object it did when captured above --
+    # ``process_start_time`` unchanged. A token that was unreadable at capture
+    # (``None``) cannot be confirmed as a survivor and is not counted; the
+    # pooling assertions above already prove all three backends ran.
+    survivors = [
+        pid
+        for pid, token in backend_ids.items()
+        if token is not None and pc.pid_exists(pid) and pc.process_start_time(pid) == token
+    ]
     assert not survivors, (
         f"private backends {survivors} outlived run_gatewayd: their reap was not "
         "joined by shutdown_all"
